@@ -146,17 +146,23 @@ async fn _refresh_login(data: ConnectData, conn: &DbConn, ip: &ClientIp) -> Json
         Err(err) => {
             err_code!(format!("Unable to refresh login credentials: {}", err.message()), Status::Unauthorized.code)
         }
-        Ok((mut device, auth_tokens)) => {
+        Ok((mut device, auth_tokens, doken)) => {
             // Save to update `device.updated_at` to track usage and toggle new status
             device.save(true, conn).await?;
 
-            let result = json!({
+            let mut result = json!({
                 "refresh_token": auth_tokens.refresh_token(),
                 "access_token": auth_tokens.access_token(),
                 "expires_in": auth_tokens.expires_in(),
                 "token_type": "Bearer",
                 "scope": auth_tokens.scope(),
             });
+
+            if CONFIG.tide_enabled() {
+                if let Some(ref dk) = doken {
+                    result["doken"] = Value::String(dk.clone());
+                }
+            }
 
             Ok(Json(result))
         }
@@ -301,10 +307,19 @@ async fn _sso_login(
     // Set the user_uuid here to be passed back used for event logging.
     *user_id = Some(user.uuid.clone());
 
+    // Extract the doken and SSO session ID before redeem consumes user_infos
+    let doken = user_infos.doken.clone();
+    // Extract sid from the SSO access token for the voucher URL
+    let sso_session_id = if CONFIG.tide_enabled() {
+        sso::extract_session_id(&user_infos.access_token)
+    } else {
+        None
+    };
+
     // We passed 2FA get auth tokens
     let auth_tokens = sso::redeem(&device, &user, data.client_id, sso_user, sso_auth, user_infos, conn).await?;
 
-    authenticated_response(&user, &mut device, auth_tokens, twofactor_token, conn, ip).await
+    authenticated_response(&user, &mut device, auth_tokens, twofactor_token, doken, sso_session_id, conn, ip).await
 }
 
 async fn _password_login(
@@ -426,7 +441,7 @@ async fn _password_login(
 
     let auth_tokens = auth::AuthTokens::new(&device, &user, AuthMethod::Password, data.client_id);
 
-    authenticated_response(&user, &mut device, auth_tokens, twofactor_token, conn, ip).await
+    authenticated_response(&user, &mut device, auth_tokens, twofactor_token, None, None, conn, ip).await
 }
 
 async fn authenticated_response(
@@ -434,6 +449,8 @@ async fn authenticated_response(
     device: &mut Device,
     auth_tokens: auth::AuthTokens,
     twofactor_token: Option<String>,
+    doken: Option<String>,
+    sso_session_id: Option<String>,
     conn: &DbConn,
     ip: &ClientIp,
 ) -> JsonResult {
@@ -495,6 +512,41 @@ async fn authenticated_response(
         Value::Null
     };
 
+    let tide_cloak_decryption = if CONFIG.tide_enabled() {
+        let base_voucher_url = if CONFIG.tide_realm().is_empty() {
+            format!("{}/{}", CONFIG.sso_authority(), CONFIG.tide_voucher_path())
+        } else {
+            format!("{}/realms/{}/{}", CONFIG.sso_authority(), CONFIG.tide_realm(), CONFIG.tide_voucher_path())
+        };
+        // Append sessionId from the SSO access token's sid claim
+        let voucher_url = match &sso_session_id {
+            Some(sid) => {
+                use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+                let encoded_sid = utf8_percent_encode(sid, NON_ALPHANUMERIC).to_string();
+                format!("{}?sessionId={}", base_voucher_url, encoded_sid)
+            }
+            None => base_voucher_url,
+        };
+
+        let encrypted_user_key = SsoUser::find_by_user_uuid(&user.uuid, conn)
+            .await
+            .and_then(|su| su.tide_encrypted_key);
+
+        let mut tide_json = json!({
+            "HomeOrkUrl": CONFIG.tide_home_ork_url(),
+            "VendorId": CONFIG.tide_vendor_id(),
+            "VoucherUrl": voucher_url,
+            "SignedClientOrigin": CONFIG.tide_client_origin_auth(),
+            "EncryptedUserKey": encrypted_user_key
+        });
+        if let Some(browser_auth) = CONFIG.tide_client_origin_auth_browser() {
+            tide_json["SignedClientOriginBrowser"] = Value::String(browser_auth);
+        }
+        tide_json
+    } else {
+        Value::Null
+    };
+
     let mut result = json!({
         "access_token": auth_tokens.access_token(),
         "expires_in": auth_tokens.expires_in(),
@@ -513,6 +565,7 @@ async fn authenticated_response(
         "UserDecryptionOptions": {
             "HasMasterPassword": has_master_password,
             "MasterPasswordUnlock": master_password_unlock,
+            "TideCloakDecryption": tide_cloak_decryption,
             "Object": "userDecryptionOptions"
         },
     });
@@ -523,6 +576,10 @@ async fn authenticated_response(
 
     if let Some(token) = twofactor_token {
         result["TwoFactorToken"] = Value::String(token);
+    }
+
+    if let Some(ref dk) = doken {
+        result["doken"] = Value::String(dk.clone());
     }
 
     info!("User {} logged in successfully. IP: {}", user.display_name(), ip.ip);

@@ -37,6 +37,9 @@ pub struct OIDCAuthenticatedUser {
     pub email: String,
     pub email_verified: Option<bool>,
     pub user_name: Option<String>,
+    /// TideCloak delegated token for ORK-mediated encryption/decryption.
+    #[serde(default)]
+    pub doken: Option<String>,
 }
 
 impl_FromToSqlText!(OIDCAuthenticatedUser);

@@ -170,6 +170,22 @@ fn decode_token_claims(token_name: &str, token: &str) -> ApiResult<BasicTokenCla
     }
 }
 
+/// Extract the `sid` (session ID) claim from an SSO access token JWT.
+/// Used to construct the voucher URL for TideCloak.
+pub fn extract_session_id(access_token: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct SidClaim {
+        sid: Option<String>,
+    }
+    match jsonwebtoken::dangerous::insecure_decode::<SidClaim>(access_token) {
+        Ok(token_data) => token_data.claims.sid,
+        Err(err) => {
+            warn!("Failed to extract sid from SSO access token: {err}");
+            None
+        }
+    }
+}
+
 pub fn decode_state(base64_state: &str) -> ApiResult<OIDCState> {
     let state = match data_encoding::BASE64.decode(base64_state.as_bytes()) {
         Ok(vec) => match String::from_utf8(vec) {
@@ -272,7 +288,7 @@ pub async fn exchange_code(
     };
 
     let client = Client::cached().await?;
-    let (token_response, id_claims) = client.exchange_code(code, client_verifier, &sso_auth).await?;
+    let (token_response, id_claims, doken) = client.exchange_code(code, client_verifier, &sso_auth).await?;
 
     let user_info = client.user_info(token_response.access_token().to_owned()).await?;
 
@@ -300,6 +316,7 @@ pub async fn exchange_code(
         email: email.clone(),
         email_verified,
         user_name: user_name.clone(),
+        doken,
     };
 
     debug!("Authenticated user {authenticated_user:?}");
@@ -326,6 +343,7 @@ pub async fn redeem(
         let user_sso = SsoUser {
             user_uuid: user.uuid.clone(),
             identifier: auth_user.identifier.clone(),
+            tide_encrypted_key: None,
         };
         user_sso.save(conn).await?;
     }
@@ -419,27 +437,29 @@ fn _create_auth_tokens(
 // This endpoint is called in two case
 //  - the session is close to expiration we will try to extend it
 //  - the user is going to make an action and we check that the session is still valid
+/// Returns (AuthTokens, Option<doken>). The doken is present when TideCloak is the SSO provider.
 pub async fn exchange_refresh_token(
     device: &Device,
     user: &User,
     client_id: Option<String>,
     refresh_claims: auth::RefreshJwtClaims,
-) -> ApiResult<AuthTokens> {
+) -> ApiResult<(AuthTokens, Option<String>)> {
     let exp = refresh_claims.exp;
     match refresh_claims.token {
         Some(TokenWrapper::Refresh(refresh_token)) => {
             // Use new refresh_token if returned
-            let (new_refresh_token, access_token, expires_in) =
+            let (new_refresh_token, access_token, expires_in, doken) =
                 Client::exchange_refresh_token(refresh_token.clone()).await?;
 
-            create_auth_tokens(
+            let auth_tokens = create_auth_tokens(
                 device,
                 user,
                 client_id,
                 new_refresh_token.or(Some(refresh_token)),
                 access_token,
                 expires_in,
-            )
+            )?;
+            Ok((auth_tokens, doken))
         }
         Some(TokenWrapper::Access(access_token)) => {
             let now = Utc::now();
@@ -461,7 +481,8 @@ pub async fn exchange_refresh_token(
                 now,
             );
 
-            _create_auth_tokens(device, None, access_claims, access_token)
+            let auth_tokens = _create_auth_tokens(device, None, access_claims, access_token)?;
+            Ok((auth_tokens, None))
         }
         None => err!("No token present while in SSO"),
     }

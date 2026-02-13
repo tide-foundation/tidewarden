@@ -513,7 +513,7 @@ impl Membership {
             "familySponsorshipLastSyncDate": null,
             "familySponsorshipValidUntil": null,
             "familySponsorshipToDelete": null,
-            "accessSecretsManager": false,
+            "accessSecretsManager": false, // Not supported (Not AGPLv3 Licensed)
             "limitCollectionCreation": self.atype < MembershipType::Manager, // If less then a manager return true, to limit collection creations
             "limitCollectionDeletion": true,
             "limitItemDeletion": false,

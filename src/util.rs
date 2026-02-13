@@ -99,8 +99,9 @@ impl Fairing for AppHeaders {
                     object-src 'self' blob:; \
                     script-src 'self' 'wasm-unsafe-eval'; \
                     style-src 'self' 'unsafe-inline'; \
-                    child-src 'self' https://*.duosecurity.com https://*.duofederal.com; \
-                    frame-src 'self' https://*.duosecurity.com https://*.duofederal.com; \
+                    child-src 'self' blob: https://*.duosecurity.com https://*.duofederal.com https://*.tideprotocol.com https://*.dauth.me; \
+                    frame-src 'self' blob: https://*.duosecurity.com https://*.duofederal.com https://*.tideprotocol.com https://*.dauth.me; \
+                    worker-src 'self' blob: https://*.tideprotocol.com https://*.dauth.me; \
                     frame-ancestors 'self' \
                     chrome-extension://nngceckbapebfimnlniiiahkandclblb \
                     chrome-extension://jbkfoedolllekgbhcbcoahefnbanhhlh \
@@ -116,6 +117,8 @@ impl Fairing for AppHeaders {
                     https://app.addy.io/api/ \
                     https://api.fastmail.com/ \
                     https://api.forwardemail.net \
+                    https://*.tideprotocol.com \
+                    https://*.dauth.me \
                     {allowed_connect_src};\
                     ",
                     icon_service_csp = CONFIG._icon_service_csp(),

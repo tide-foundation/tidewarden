@@ -17,7 +17,7 @@ use crate::{
         models::{
             AuthRequest, AuthRequestId, Cipher, CipherId, Device, DeviceId, DeviceType, EmergencyAccess,
             EmergencyAccessId, EventType, Folder, FolderId, Invitation, Membership, MembershipId, OrgPolicy,
-            OrgPolicyType, Organization, OrganizationId, Send, SendId, User, UserId, UserKdfType,
+            OrgPolicyType, Organization, OrganizationId, Send, SendId, SsoUser, User, UserId, UserKdfType,
         },
         DbConn,
     },
@@ -73,6 +73,7 @@ pub fn routes() -> Vec<rocket::Route> {
         get_auth_request_response,
         get_auth_requests,
         get_auth_requests_pending,
+        post_tide_key,
     ]
 }
 
@@ -1706,4 +1707,27 @@ pub async fn purge_auth_requests(pool: DbPool) {
     } else {
         error!("Failed to get DB connection while purging auth requests")
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TideKeyData {
+    encrypted_user_key: String,
+}
+
+#[post("/accounts/tide-key", data = "<data>")]
+async fn post_tide_key(data: Json<TideKeyData>, headers: Headers, conn: DbConn) -> EmptyResult {
+    if !CONFIG.tide_enabled() {
+        err!("TideCloak integration is not enabled");
+    }
+
+    let data: TideKeyData = data.into_inner();
+
+    let mut sso_user = match SsoUser::find_by_user_uuid(&headers.user.uuid, &conn).await {
+        Some(su) => su,
+        None => err!("No SSO user found for this account"),
+    };
+
+    sso_user.tide_encrypted_key = Some(data.encrypted_user_key);
+    sso_user.save(&conn).await
 }

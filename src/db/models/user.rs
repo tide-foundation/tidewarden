@@ -80,6 +80,7 @@ pub struct Invitation {
 pub struct SsoUser {
     pub user_uuid: UserId,
     pub identifier: OIDCIdentifier,
+    pub tide_encrypted_key: Option<String>,
 }
 
 pub enum UserKdfType {
@@ -546,6 +547,15 @@ impl SsoUser {
                 .select(<(User, Option<Self>)>::as_select())
                 .filter(users::email.eq(lower_mail))
                 .first::<(User, Option<Self>)>(conn)
+                .ok()
+        }}
+    }
+
+    pub async fn find_by_user_uuid(user_uuid: &UserId, conn: &DbConn) -> Option<Self> {
+        db_run! { conn: {
+            sso_users::table
+                .filter(sso_users::user_uuid.eq(user_uuid))
+                .first::<Self>(conn)
                 .ok()
         }}
     }
