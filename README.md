@@ -6,7 +6,7 @@ A fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and
 
 ## Why TideWarden?
 
-Traditional password managers force a choice between convenience and security. Most opt for convenience, filling the gap with promises that often [prove unfounded](https://www.itnews.com.au/news/researchers-find-critical-vulnerabilities-in-cloud-based-password-managers-623661). TideWarden offers a different approach, built on two assumptions: that servers should be treated as potentially hostile, and that users shouldn't be burdened with key management. By integrating with Tide's Cybersecurity Fabric, cryptographic keys are generated and operated across a decentralized network, never materializing anywhere in full. A compromised server cannot expose secrets or elevate privileges. Users never need to remember, store, or safeguard a master key.
+Traditional password managers force a choice between convenience and security. Most opt for convenience, filling the gap with promises that often [prove unfounded](https://www.itnews.com.au/news/researchers-find-critical-vulnerabilities-in-cloud-based-password-managers-623661). TideWarden offers a different approach, built on two assumptions: that servers should be treated as potentially hostile, and that users shouldn't be burdened with key management. By integrating with Tide's Cybersecurity Fabric, cryptographic keys (used to authenticate the user and encrypt their passwords) are generated and operated across a decentralized network, never materializing anywhere in full or trusted to anyone. A compromised server cannot expose secrets or elevate privileges. Users never need to remember, store, or safeguard a master key.
 
 **Key differences from Vaultwarden / Bitwarden:**
 
