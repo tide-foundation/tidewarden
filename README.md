@@ -1,146 +1,122 @@
-![Vaultwarden Logo](./resources/vaultwarden-logo-auto.svg)
+![TideWarden Logo](./resources/tidewarden-logo-auto.svg)
 
-An alternative server implementation of the Bitwarden Client API, written in Rust and compatible with [official Bitwarden clients](https://bitwarden.com/download/) [[disclaimer](#disclaimer)], perfect for self-hosted deployment where running the official resource-heavy service might not be ideal.
+A fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) with integrated [TideCloak](https://www.tideprotocol.com/) support for decentralized key management and ORK-based field encryption.
 
 ---
 
-[![GitHub Release](https://img.shields.io/github/release/dani-garcia/vaultwarden.svg?style=for-the-badge&logo=vaultwarden&color=005AA4)](https://github.com/dani-garcia/vaultwarden/releases/latest)
-[![ghcr.io Pulls](https://img.shields.io/badge/dynamic/json?style=for-the-badge&logo=github&logoColor=fff&color=005AA4&url=https%3A%2F%2Fipitio.github.io%2Fbackage%2Fdani-garcia%2Fvaultwarden%2Fvaultwarden.json&query=%24.downloads&label=ghcr.io%20pulls&cacheSeconds=14400)](https://github.com/dani-garcia/vaultwarden/pkgs/container/vaultwarden)
-[![Docker Pulls](https://img.shields.io/docker/pulls/vaultwarden/server.svg?style=for-the-badge&logo=docker&logoColor=fff&color=005AA4&label=docker.io%20pulls)](https://hub.docker.com/r/vaultwarden/server)
-[![Quay.io](https://img.shields.io/badge/quay.io-download-005AA4?style=for-the-badge&logo=redhat&cacheSeconds=14400)](https://quay.io/repository/vaultwarden/server) <br>
-[![Contributors](https://img.shields.io/github/contributors-anon/dani-garcia/vaultwarden.svg?style=flat-square&logo=vaultwarden&color=005AA4)](https://github.com/dani-garcia/vaultwarden/graphs/contributors)
-[![Forks](https://img.shields.io/github/forks/dani-garcia/vaultwarden.svg?style=flat-square&logo=github&logoColor=fff&color=005AA4)](https://github.com/dani-garcia/vaultwarden/network/members)
-[![Stars](https://img.shields.io/github/stars/dani-garcia/vaultwarden.svg?style=flat-square&logo=github&logoColor=fff&color=005AA4)](https://github.com/dani-garcia/vaultwarden/stargazers)
-[![Issues Open](https://img.shields.io/github/issues/dani-garcia/vaultwarden.svg?style=flat-square&logo=github&logoColor=fff&color=005AA4&cacheSeconds=300)](https://github.com/dani-garcia/vaultwarden/issues)
-[![Issues Closed](https://img.shields.io/github/issues-closed/dani-garcia/vaultwarden.svg?style=flat-square&logo=github&logoColor=fff&color=005AA4&cacheSeconds=300)](https://github.com/dani-garcia/vaultwarden/issues?q=is%3Aissue+is%3Aclosed)
-[![AGPL-3.0 Licensed](https://img.shields.io/github/license/dani-garcia/vaultwarden.svg?style=flat-square&logo=vaultwarden&color=944000&cacheSeconds=14400)](https://github.com/dani-garcia/vaultwarden/blob/main/LICENSE.txt) <br>
-[![Dependency Status](https://img.shields.io/badge/dynamic/xml?url=https%3A%2F%2Fdeps.rs%2Frepo%2Fgithub%2Fdani-garcia%2Fvaultwarden%2Fstatus.svg&query=%2F*%5Blocal-name()%3D'svg'%5D%2F*%5Blocal-name()%3D'g'%5D%5B2%5D%2F*%5Blocal-name()%3D'text'%5D%5B4%5D&style=flat-square&logo=rust&label=dependencies&color=005AA4)](https://deps.rs/repo/github/dani-garcia/vaultwarden)
-[![GHA Release](https://img.shields.io/github/actions/workflow/status/dani-garcia/vaultwarden/release.yml?style=flat-square&logo=github&logoColor=fff&label=Release%20Workflow)](https://github.com/dani-garcia/vaultwarden/actions/workflows/release.yml)
-[![GHA Build](https://img.shields.io/github/actions/workflow/status/dani-garcia/vaultwarden/build.yml?style=flat-square&logo=github&logoColor=fff&label=Build%20Workflow)](https://github.com/dani-garcia/vaultwarden/actions/workflows/build.yml) <br>
-[![Matrix Chat](https://img.shields.io/matrix/vaultwarden:matrix.org.svg?style=flat-square&logo=matrix&logoColor=fff&color=953B00&cacheSeconds=14400)](https://matrix.to/#/#vaultwarden:matrix.org)
-[![GitHub Discussions](https://img.shields.io/github/discussions/dani-garcia/vaultwarden?style=flat-square&logo=github&logoColor=fff&color=953B00&cacheSeconds=300)](https://github.com/dani-garcia/vaultwarden/discussions)
-[![Discourse Discussions](https://img.shields.io/discourse/topics?server=https%3A%2F%2Fvaultwarden.discourse.group%2F&style=flat-square&logo=discourse&color=953B00)](https://vaultwarden.discourse.group/)
+## Why TideWarden?
 
-> [!IMPORTANT]
-> **When using this server, please report any bugs or suggestions directly to us (see [Get in touch](#get-in-touch)), regardless of whatever clients you are using (mobile, desktop, browser...). DO NOT use the official Bitwarden support channels.**
+The fundamental flaw in current password managers is that they function like a physical safe: if thieves steal the database, they can take it offline and use infinite computing power to drill the lock until it breaks. Integrating Tide fundamentally alters this reality by ensuring the master key to that safe never actually exists to be stolen. Instead, Tide transforms your specific browser into a temporary, ephemeral key that decrypts only the exact password you need, strictly for the moment you are using it, while the rest of the vault remains mathematically sealed. This renders a stolen database useless: because the "key" is generated physically on your device and vanishes when you leave, an attacker cannot drag the vault away to crack it, nor can they unlock the full contents even if they compromise the server.
 
-<br>
+**Key differences from Vaultwarden / Bitwarden:**
+
+- **No master password** — There is no master key to steal. Keys are generated ephemerally on your device through the ORK threshold network and never persist
+- **Stolen database is useless** — Without the ORK network cooperating in real-time with your authenticated browser, encrypted vault data cannot be decrypted offline
+- **On-demand decryption** — Only the exact field you are viewing is decrypted, only for the moment you need it. The rest of the vault remains sealed
+- **TideCloak SSO** — Authentication through TideCloak (a Keycloak fork with Tide Protocol integration) instead of email/password
+- **ORK field encryption** — Vault fields are encrypted via the ORK network using `EncryptionType 100`, not local AES
+- **Chrome MV3** — Browser extension built with Manifest V3
+
+## Architecture
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Browser    │     │  TideWarden  │     │  TideCloak   │
+│  Extension   │────▶│    Server    │────▶│   (IdP)      │
+│  / Web Vault │     │ (Rust/Rocket)│     │              │
+└──────┬───────┘     └──────────────┘     └──────────────┘
+       │
+       │  encrypt/decrypt
+       ▼
+┌──────────────┐
+│  ORK Network │
+│  (Threshold  │
+│   Crypto)    │
+└──────────────┘
+```
+
+- **Server**: Fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) — Rust, Rocket framework, SQLite/MySQL/PostgreSQL
+- **Clients**: Fork of [Bitwarden Clients](https://github.com/bitwarden/clients) — Angular web vault + browser extension (included as a git submodule at `clients/`)
 
 ## Features
 
-A nearly complete implementation of the Bitwarden Client API is provided, including:
+Everything from Vaultwarden, plus:
 
- * [Personal Vault](https://bitwarden.com/help/managing-items/)
- * [Send](https://bitwarden.com/help/about-send/)
- * [Attachments](https://bitwarden.com/help/attachments/)
- * [Website icons](https://bitwarden.com/help/website-icons/)
- * [Personal API Key](https://bitwarden.com/help/personal-api-key/)
- * [Organizations](https://bitwarden.com/help/getting-started-organizations/)
-   - [Collections](https://bitwarden.com/help/about-collections/),
-     [Password Sharing](https://bitwarden.com/help/sharing/),
-     [Member Roles](https://bitwarden.com/help/user-types-access-control/),
-     [Groups](https://bitwarden.com/help/about-groups/),
-     [Event Logs](https://bitwarden.com/help/event-logs/),
-     [Admin Password Reset](https://bitwarden.com/help/admin-reset/),
-     [Directory Connector](https://bitwarden.com/help/directory-sync/),
-     [Policies](https://bitwarden.com/help/policies/)
- * [Multi/Two Factor Authentication](https://bitwarden.com/help/bitwarden-field-guide-two-step-login/)
-   - [Authenticator](https://bitwarden.com/help/setup-two-step-login-authenticator/),
-     [Email](https://bitwarden.com/help/setup-two-step-login-email/),
-     [FIDO2 WebAuthn](https://bitwarden.com/help/setup-two-step-login-fido/),
-     [YubiKey](https://bitwarden.com/help/setup-two-step-login-yubikey/),
-     [Duo](https://bitwarden.com/help/setup-two-step-login-duo/)
- * [Emergency Access](https://bitwarden.com/help/emergency-access/)
- * [Vaultwarden Admin Backend](https://github.com/dani-garcia/vaultwarden/wiki/Enabling-admin-page)
- * [Modified Web Vault client](https://github.com/dani-garcia/bw_web_builds) (Bundled within our containers)
+- TideCloak SSO login (OIDC with vendor_data exchange)
+- ORK-encrypted vault fields (login credentials, notes, card details, identity fields)
+- Doken-based authorization for ORK operations
+- On-demand decryption (bulk vault loads skip ORK, individual items decrypt on view)
+- Browser extension with MV3 manifest
+- Configurable via environment variables (`TIDE_ENABLED`, `TIDE_HOME_ORK_URL`, etc.)
 
-<br>
+## Prerequisites
 
-## Usage
+- **Rust** toolchain (stable)
+- **Node.js** >= 18 and npm
+- **System packages**: `libssl-dev`, `pkg-config`, `build-essential`
+- A running **TideCloak** instance configured with your realm and vendor
 
-> [!IMPORTANT]
-> The web-vault requires the use a secure context for the [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API).
-> That means it will only work via `http://localhost:8000` (using the port from the example below) or if you [enable HTTPS](https://github.com/dani-garcia/vaultwarden/wiki/Enabling-HTTPS).
+## Quick Start
 
-The recommended way to install and use Vaultwarden is via our container images which are published to [ghcr.io](https://github.com/dani-garcia/vaultwarden/pkgs/container/vaultwarden), [docker.io](https://hub.docker.com/r/vaultwarden/server) and [quay.io](https://quay.io/repository/vaultwarden/server).
-See [which container image to use](https://github.com/dani-garcia/vaultwarden/wiki/Which-container-image-to-use) for an explanation of the provided tags.
+```bash
+# Clone with submodules
+git clone --recurse-submodules https://github.com/sashyo/vaultwarden.git
+cd vaultwarden
 
-There are also [community driven packages](https://github.com/dani-garcia/vaultwarden/wiki/Third-party-packages) which can be used, but those might be lagging behind the latest version or might deviate in the way Vaultwarden is configured, as described in our [Wiki](https://github.com/dani-garcia/vaultwarden/wiki).
+# Copy and edit environment config
+cp .env.template .env
+# Edit .env — set TIDE_ENABLED=true, SSO_*, TIDE_* variables
 
-Alternatively, you can also [build Vaultwarden](https://github.com/dani-garcia/vaultwarden/wiki/Building-binary) yourself.
-
-While Vaultwarden is based upon the [Rocket web framework](https://rocket.rs) which has built-in support for TLS our recommendation would be that you setup a reverse proxy (see [proxy examples](https://github.com/dani-garcia/vaultwarden/wiki/Proxy-examples)).
-
-> [!TIP]
->**For more detailed examples on how to install, use and configure Vaultwarden you can check our [Wiki](https://github.com/dani-garcia/vaultwarden/wiki).**
-
-### Docker/Podman CLI
-
-Pull the container image and mount a volume from the host for persistent storage.<br>
-You can replace `docker` with `podman` if you prefer to use podman.
-
-```shell
-docker pull vaultwarden/server:latest
-docker run --detach --name vaultwarden \
-  --env DOMAIN="https://vw.domain.tld" \
-  --volume /vw-data/:/data/ \
-  --restart unless-stopped \
-  --publish 127.0.0.1:8000:80 \
-  vaultwarden/server:latest
+# Build everything and start
+./start.sh
 ```
 
-This will preserve any persistent data under `/vw-data/`, you can adapt the path to whatever suits you.
+The start script builds the server, web vault, and browser extension, then starts vaultwarden on `http://localhost:8000`.
 
-### Docker Compose
+### Script options
 
-To use Docker compose you need to create a `compose.yaml` which will hold the configuration to run the Vaultwarden container.
-
-```yaml
-services:
-  vaultwarden:
-    image: vaultwarden/server:latest
-    container_name: vaultwarden
-    restart: unless-stopped
-    environment:
-      DOMAIN: "https://vw.domain.tld"
-    volumes:
-      - ./vw-data/:/data/
-    ports:
-      - 127.0.0.1:8000:80
+```
+./start.sh                 # Build all + start server
+./start.sh --skip-build    # Start server without building
+./start.sh --server-only   # Build + run server only
+./start.sh --clients-only  # Build web vault + browser extension only
+./start.sh --web-only      # Build web vault only
+./start.sh --browser-only  # Build browser extension (MV3) only
+./start.sh --release       # Cargo release build
 ```
 
-<br>
+### Loading the browser extension
 
-## Get in touch
+After building, load the extension from `clients/apps/browser/build/` in Chrome/Edge:
 
-Have a question, suggestion or need help? Join our community on [Matrix](https://matrix.to/#/#vaultwarden:matrix.org), [GitHub Discussions](https://github.com/dani-garcia/vaultwarden/discussions) or [Discourse Forums](https://vaultwarden.discourse.group/).
+1. Go to `chrome://extensions`
+2. Enable "Developer mode"
+3. Click "Load unpacked" and select the `build/` directory
 
-Encountered a bug or crash? Please search our issue tracker and discussions to see if it's already been reported. If not, please [start a new discussion](https://github.com/dani-garcia/vaultwarden/discussions) or [create a new issue](https://github.com/dani-garcia/vaultwarden/issues/). Ensure you're using the latest version of Vaultwarden and there aren't any similar issues open or closed!
+## Configuration
 
-<br>
+TideCloak-specific environment variables (set in `.env`):
 
-## Contributors
+| Variable | Description |
+|----------|-------------|
+| `TIDE_ENABLED` | Enable TideCloak integration (`true`/`false`) |
+| `SSO_ENABLED` | Enable SSO (`true`) |
+| `SSO_AUTHORITY` | TideCloak base URL |
+| `SSO_CLIENT_ID` | OIDC client ID |
+| `SSO_CLIENT_SECRET` | OIDC client secret |
+| `TIDE_HOME_ORK_URL` | Home ORK endpoint URL |
+| `TIDE_VOUCHER_PATH` | Voucher endpoint path |
+| `TIDE_REALM` | TideCloak realm name |
+| `TIDE_VENDOR_ID` | Vendor ID for ORK operations |
 
-Thanks for your contribution to the project!
+## Upstream
 
-[![Contributors Count](https://img.shields.io/github/contributors-anon/dani-garcia/vaultwarden?style=for-the-badge&logo=vaultwarden&color=005AA4)](https://github.com/dani-garcia/vaultwarden/graphs/contributors)<br>
-[![Contributors Avatars](https://contributors-img.web.app/image?repo=dani-garcia/vaultwarden)](https://github.com/dani-garcia/vaultwarden/graphs/contributors)
+- Server: [dani-garcia/vaultwarden](https://github.com/dani-garcia/vaultwarden)
+- Clients: [bitwarden/clients](https://github.com/bitwarden/clients)
+- Tide Protocol: [tide-foundation](https://www.tideprotocol.com/)
 
-<br>
+## License
 
-## Disclaimer
+This project inherits the [AGPL-3.0 license](LICENSE.txt) from Vaultwarden.
 
-**This project is not associated with [Bitwarden](https://bitwarden.com/) or Bitwarden, Inc.**
-
-However, one of the active maintainers for Vaultwarden is employed by Bitwarden and is allowed to contribute to the project on their own time. These contributions are independent of Bitwarden and are reviewed by other maintainers.
-
-The maintainers work together to set the direction for the project, focusing on serving the self-hosting community, including individuals, families, and small organizations, while ensuring the project's sustainability.
-
-**Please note:** We cannot be held liable for any data loss that may occur while using Vaultwarden. This includes passwords, attachments, and other information handled by the application. We highly recommend performing regular backups of your files and database. However, should you experience data loss, we encourage you to contact us immediately.
-
-<br>
-
-## Bitwarden_RS
-
-This project was known as Bitwarden_RS and has been renamed to separate itself from the official Bitwarden server in the hopes of avoiding confusion and trademark/branding issues.<br>
-Please see [#1642 - v1.21.0 release and project rename to Vaultwarden](https://github.com/dani-garcia/vaultwarden/discussions/1642) for more explanation.
+**This project is not associated with [Bitwarden](https://bitwarden.com/) or Bitwarden, Inc., nor with [Vaultwarden](https://github.com/dani-garcia/vaultwarden).**

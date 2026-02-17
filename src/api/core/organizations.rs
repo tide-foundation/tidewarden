@@ -2194,27 +2194,72 @@ fn get_organization_tax(org_id: OrganizationId, _headers: Headers) -> Json<Value
 
 #[get("/plans")]
 fn get_plans() -> Json<Value> {
-    // Respond with a minimal json just enough to allow the creation of an new organization.
+    // Respond with plan data that satisfies the web vault client's organization creation form.
+    // Vaultwarden gives all organizations enterprise-level features regardless of plan type.
     Json(json!({
         "object": "list",
         "data": [{
             "object": "plan",
             "type": 0,
-            "product": 0,
-            "name": "Free",
-            "nameLocalizationKey": "planNameFree",
-            "bitwardenProduct": 0,
-            "maxUsers": 0,
-            "descriptionLocalizationKey": "planDescFree"
-        },{
-            "object": "plan",
-            "type": 0,
-            "product": 1,
-            "name": "Free",
-            "nameLocalizationKey": "planNameFree",
-            "bitwardenProduct": 1,
-            "maxUsers": 0,
-            "descriptionLocalizationKey": "planDescFree"
+            "productTier": 3,
+            "name": "Enterprise",
+            "isAnnual": false,
+            "nameLocalizationKey": "planNameEnterprise",
+            "descriptionLocalizationKey": "planDescEnterprise",
+            "canBeUsedByBusiness": true,
+            "trialPeriodDays": null,
+            "hasSelfHost": true,
+            "hasPolicies": true,
+            "hasGroups": true,
+            "hasDirectory": true,
+            "hasEvents": true,
+            "hasTotp": true,
+            "has2fa": true,
+            "hasApi": true,
+            "hasSso": true,
+            "hasResetPassword": true,
+            "usersGetPremium": true,
+            "upgradeSortOrder": -1,
+            "displaySortOrder": -1,
+            "legacyYear": null,
+            "disabled": false,
+            "PasswordManager": {
+                "stripePlanId": null,
+                "stripeSeatPlanId": null,
+                "stripeProviderPortalSeatPlanId": null,
+                "stripeStoragePlanId": null,
+                "stripePremiumAccessPlanId": null,
+                "basePrice": 0,
+                "seatPrice": 0,
+                "providerPortalSeatPrice": 0,
+                "baseSeats": 0,
+                "maxAdditionalSeats": 32767,
+                "premiumAccessOptionPrice": 0,
+                "maxSeats": 32767,
+                "additionalStoragePricePerGb": 0,
+                "hasAdditionalSeatsOption": true,
+                "baseStorageGb": 1,
+                "maxCollections": 32767,
+                "hasAdditionalStorageOption": true,
+                "maxAdditionalStorage": 32767,
+                "hasPremiumAccessOption": false
+            },
+            "SecretsManager": {
+                "stripeSeatPlanId": null,
+                "baseSeats": 0,
+                "basePrice": 0,
+                "seatPrice": 0,
+                "hasAdditionalSeatsOption": true,
+                "maxAdditionalSeats": 32767,
+                "maxSeats": 32767,
+                "stripeServiceAccountPlanId": null,
+                "additionalPricePerServiceAccount": 0,
+                "baseServiceAccount": 0,
+                "maxServiceAccount": 32767,
+                "hasAdditionalServiceAccountOption": true,
+                "maxAdditionalServiceAccounts": 32767,
+                "maxProjects": 32767
+            }
         }],
         "continuationToken": null
     }))

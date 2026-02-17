@@ -137,6 +137,98 @@ bit-nav-logo bit-nav-item .bwi-shield {
 app-user-layout app-danger-zone button:nth-child(1) {
   @extend %vw-hide;
 }
+
+/* Hide all billing/subscription UI - everything is enterprise by default */
+/* Individual subscription nav and pages */
+bit-nav-item[route="settings/subscription"],
+a[href$="/settings/subscription"] {
+  @extend %vw-hide;
+}
+app-user-subscription {
+  @extend %vw-hide;
+}
+app-cloud-hosted-premium,
+app-self-hosted-premium {
+  @extend %vw-hide;
+}
+
+/* Organization billing nav and pages */
+bit-nav-group[route="billing"],
+bit-nav-item[route="billing/subscription"],
+bit-nav-item[route="billing/payment-details"],
+bit-nav-item[route="billing/history"] {
+  @extend %vw-hide;
+}
+
+/* Hide subscription status, change plan, upgrade prompts */
+app-subscription-status {
+  @extend %vw-hide;
+}
+app-change-plan,
+app-change-plan-dialog {
+  @extend %vw-hide;
+}
+app-upgrade-nav-button {
+  @extend %vw-hide;
+}
+
+/* Hide all pricing cards and plan selection */
+billing-pricing-card,
+app-plan-card {
+  @extend %vw-hide;
+}
+
+/* Hide payment/billing forms */
+app-enter-payment-method,
+app-enter-billing-address {
+  @extend %vw-hide;
+}
+
+/* Hide license upload */
+organization-self-hosting-license-uploader,
+app-individual-self-hosting-license-uploader,
+app-organization-self-hosting-license-uploader {
+  @extend %vw-hide;
+}
+
+/* Hide payment information section in org creation */
+app-organization-plans > form > bit-section:has(app-enter-payment-method) {
+  @extend %vw-hide;
+}
+
+/* Hide price breakdown in org creation */
+#price {
+  @extend %vw-hide;
+}
+
+/* Hide Families sponsorship nav */
+billing-free-families-nav-item {
+  @extend %vw-hide;
+}
+
+/* Hide all ads, upsells, trials, and premium prompts — Vaultwarden provides everything free */
+sm-subscribe,
+sm-subscribe-standalone,
+app-sm-landing,
+app-sm-adjust-subscription,
+app-request-sm-access,
+app-upgrade-nav-button,
+app-unified-upgrade-dialog,
+app-trial-billing-step,
+app-trial-payment-dialog,
+app-complete-trial-initiation,
+app-trial-confirmation-details,
+app-organization-free-trial-warning,
+app-organization-reseller-renewal-warning,
+app-free-bitwarden-families,
+app-sponsored-families,
+app-cancel-subscription-form {
+  @extend %vw-hide;
+}
+/* Hide "More from ..." product switcher and upgrade button in sidebar */
+navigation-product-switcher {
+  @extend %vw-hide;
+}
 /**** END Static Vaultwarden Changes ****/
 /**** START Dynamic Vaultwarden Changes ****/
 {{#if signup_disabled}}

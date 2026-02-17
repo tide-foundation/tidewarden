@@ -1202,12 +1202,13 @@ impl AuthTokens {
     }
 }
 
+/// Returns (Device, AuthTokens, Option<doken>).
 pub async fn refresh_tokens(
     ip: &ClientIp,
     refresh_token: &str,
     client_id: Option<String>,
     conn: &DbConn,
-) -> ApiResult<(Device, AuthTokens)> {
+) -> ApiResult<(Device, AuthTokens, Option<String>)> {
     let refresh_claims = match decode_refresh(refresh_token) {
         Err(err) => {
             error!("Failed to decode {} refresh_token: {refresh_token}: {err:?}", ip.ip);
@@ -1242,18 +1243,18 @@ pub async fn refresh_tokens(
         Some(user) => user,
     };
 
-    let auth_tokens = match refresh_claims.sub {
+    let (auth_tokens, doken) = match refresh_claims.sub {
         AuthMethod::Sso if CONFIG.sso_enabled() && CONFIG.sso_auth_only_not_session() => {
-            AuthTokens::new(&device, &user, refresh_claims.sub, client_id)
+            (AuthTokens::new(&device, &user, refresh_claims.sub, client_id), None)
         }
         AuthMethod::Sso if CONFIG.sso_enabled() => {
             sso::exchange_refresh_token(&device, &user, client_id, refresh_claims).await?
         }
         AuthMethod::Sso => err!("SSO is now disabled, Login again using email and master password"),
         AuthMethod::Password if CONFIG.sso_enabled() && CONFIG.sso_only() => err!("SSO is now required, Login again"),
-        AuthMethod::Password => AuthTokens::new(&device, &user, refresh_claims.sub, client_id),
+        AuthMethod::Password => (AuthTokens::new(&device, &user, refresh_claims.sub, client_id), None),
         _ => err!("Invalid auth method, cannot refresh token"),
     };
 
-    Ok((device, auth_tokens))
+    Ok((device, auth_tokens, doken))
 }

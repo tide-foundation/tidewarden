@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/home/sasha/project/tide-js/Cryptide"
+    ]
+  }
+}

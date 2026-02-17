@@ -831,6 +831,24 @@ make_config! {
         sso_debug_tokens:               bool,   true,   def,    false;
     },
 
+    /// TideCloak settings |> Enable distributed encryption via TideCloak ORK enclaves (requires SSO to be configured with a TideCloak provider)
+    tidecloak {
+        /// Enabled |> Enable TideCloak integration for ORK-mediated encryption/decryption
+        tide_enabled:                   bool,   true,   def,    false;
+        /// Vendor ID |> The TideCloak vendor identifier
+        tide_vendor_id:                 String, true,   def,    String::new();
+        /// Home ORK URL |> URL of the home ORK enclave service (if not provided, extracted from doken `t.uho` claim)
+        tide_home_ork_url:              String, true,   option;
+        /// Voucher path |> Path appended to SSO authority for voucher retrieval
+        tide_voucher_path:              String, true,   def,    "tidevouchers/fromUserSession".to_string();
+        /// Realm |> TideCloak realm name
+        tide_realm:                     String, true,   def,    String::new();
+        /// Signed Client Origin |> HMAC signature of the client origin, required by RequestEnclave for ORK authentication
+        tide_client_origin_auth:        String, true,   option;
+        /// Signed Client Origin (Browser Extension) |> HMAC signature for browser extension origin (chrome-extension://...)
+        tide_client_origin_auth_browser: String, true,  option;
+    },
+
     /// Yubikey settings
     yubico: _enable_yubico {
         /// Enabled
@@ -1083,8 +1101,11 @@ fn validate_config(cfg: &ConfigItems) -> Result<(), Error> {
     }
 
     if cfg.sso_enabled {
-        if cfg.sso_client_id.is_empty() || cfg.sso_client_secret.is_empty() || cfg.sso_authority.is_empty() {
-            err!("`SSO_CLIENT_ID`, `SSO_CLIENT_SECRET` and `SSO_AUTHORITY` must be set for SSO support")
+        if cfg.sso_client_id.is_empty() || cfg.sso_authority.is_empty() {
+            err!("`SSO_CLIENT_ID` and `SSO_AUTHORITY` must be set for SSO support")
+        }
+        if !cfg.tide_enabled && cfg.sso_client_secret.is_empty() {
+            err!("`SSO_CLIENT_SECRET` must be set for SSO support (not required when TideCloak is enabled)")
         }
 
         validate_internal_sso_issuer_url(&cfg.sso_authority)?;

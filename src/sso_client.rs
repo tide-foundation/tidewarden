@@ -1,4 +1,4 @@
-use std::{borrow::Cow, sync::LazyLock, time::Duration};
+use std::{borrow::Cow, future::Future, pin::Pin, sync::LazyLock, sync::Mutex, time::Duration};
 
 use mini_moka::sync::Cache;
 use openidconnect::{core::*, reqwest, *};
@@ -16,6 +16,60 @@ static CLIENT_CACHE_KEY: LazyLock<String> = LazyLock::new(|| "sso-client".to_str
 static CLIENT_CACHE: LazyLock<Cache<String, Client>> = LazyLock::new(|| {
     Cache::builder().max_capacity(1).time_to_live(Duration::from_secs(CONFIG.sso_client_cache_expiration())).build()
 });
+
+/// HTTP client wrapper that intercepts token endpoint responses to capture TideCloak's
+/// `doken` (delegated token) from the raw JSON body before the openidconnect crate
+/// deserializes it (which would drop unknown fields like `doken`).
+/// When TideCloak is not the SSO provider, the captured doken will simply be `None`.
+struct DokenCapturingClient {
+    inner: reqwest::Client,
+    doken: Mutex<Option<String>>,
+}
+
+impl DokenCapturingClient {
+    fn new(inner: &reqwest::Client) -> Self {
+        Self {
+            inner: inner.clone(),
+            doken: Mutex::new(None),
+        }
+    }
+
+    fn doken(&self) -> Option<String> {
+        self.doken.lock().unwrap().clone()
+    }
+}
+
+impl<'c> AsyncHttpClient<'c> for DokenCapturingClient {
+    type Error = <reqwest::Client as AsyncHttpClient<'c>>::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<HttpResponse, Self::Error>> + Send + Sync + 'c>>;
+
+    fn call(&'c self, request: HttpRequest) -> Self::Future {
+        Box::pin(async move {
+            // Debug log the outgoing request
+            debug!("SSO token request: {} {}", request.method(), request.uri());
+            if let Ok(body_str) = std::str::from_utf8(request.body()) {
+                debug!("SSO token request body: {}", body_str);
+            }
+
+            let response = self.inner.call(request).await?;
+
+            // Debug log the response
+            debug!("SSO token response status: {}", response.status());
+            if let Ok(body_str) = std::str::from_utf8(response.body()) {
+                debug!("SSO token response body: {}", body_str);
+            }
+
+            // Try to extract doken from response body (present when TideCloak is the SSO provider)
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(response.body()) {
+                if let Some(d) = json.get("doken").and_then(|v| v.as_str()) {
+                    *self.doken.lock().unwrap() = Some(d.to_string());
+                }
+            }
+
+            Ok(response)
+        })
+    }
+}
 
 /// OpenID Connect Core client.
 pub type CustomClient = openidconnect::Client<
@@ -48,7 +102,11 @@ impl Client {
     // Call the OpenId discovery endpoint to retrieve configuration
     async fn _get_client() -> ApiResult<Self> {
         let client_id = ClientId::new(CONFIG.sso_client_id());
-        let client_secret = ClientSecret::new(CONFIG.sso_client_secret());
+        let client_secret = if CONFIG.sso_client_secret().is_empty() {
+            None
+        } else {
+            Some(ClientSecret::new(CONFIG.sso_client_secret()))
+        };
 
         let issuer_url = CONFIG.sso_issuer_url()?;
 
@@ -62,7 +120,7 @@ impl Client {
             Ok(metadata) => metadata,
         };
 
-        let base_client = CoreClient::from_provider_metadata(provider_metadata, client_id, Some(client_secret));
+        let base_client = CoreClient::from_provider_metadata(provider_metadata, client_id, client_secret);
 
         let token_uri = match base_client.token_uri() {
             Some(uri) => uri.clone(),
@@ -136,24 +194,14 @@ impl Client {
         Ok((auth_url, SsoAuth::new(state, client_challenge, nonce.secret().clone(), redirect_uri)))
     }
 
+    /// Exchange an authorization code for tokens. Returns the token response, ID token claims,
+    /// and an optional TideCloak `doken` (captured from the raw token endpoint response).
     pub async fn exchange_code(
         &self,
         code: OIDCCode,
         client_verifier: OIDCCodeVerifier,
         sso_auth: &SsoAuth,
-    ) -> ApiResult<(
-        StandardTokenResponse<
-            IdTokenFields<
-                EmptyAdditionalClaims,
-                EmptyExtraTokenFields,
-                CoreGenderClaim,
-                CoreJweContentEncryptionAlgorithm,
-                CoreJwsSigningAlgorithm,
-            >,
-            CoreTokenType,
-        >,
-        IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>,
-    )> {
+    ) -> ApiResult<(CoreTokenResponse, IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, Option<String>)> {
         let oidc_code = AuthorizationCode::new(code.to_string());
 
         let mut exchange = self.core_client.exchange_code(oidc_code);
@@ -169,7 +217,9 @@ impl Client {
             }
         }
 
-        match exchange.request_async(&self.http_client).await {
+        // Use DokenCapturingClient to intercept the raw response and capture doken
+        let doken_client = DokenCapturingClient::new(&self.http_client);
+        match exchange.request_async(&doken_client).await {
             Err(err) => err!(format!("Failed to contact token endpoint: {:?}", err)),
             Ok(token_response) => {
                 let oidc_nonce = Nonce::new(sso_auth.nonce.clone());
@@ -184,6 +234,7 @@ impl Client {
                     debug!("Access token: {}", token_response.access_token().secret());
                     debug!("Refresh token: {:?}", token_response.refresh_token().map(|t| t.secret()));
                     debug!("Expiration time: {:?}", token_response.expires_in());
+                    debug!("Doken: {:?}", doken_client.doken());
                 }
 
                 let id_claims = match id_token.claims(&self.vw_id_token_verifier(), &oidc_nonce) {
@@ -194,7 +245,7 @@ impl Client {
                     }
                 };
 
-                Ok((token_response, id_claims))
+                Ok((token_response, id_claims, doken_client.doken()))
             }
         }
     }
@@ -231,14 +282,20 @@ impl Client {
         verifier
     }
 
+    /// Exchange a refresh token for new tokens.
+    /// Returns (new_refresh_token, access_token, expires_in, doken).
+    /// The doken is captured from the raw response when TideCloak is the SSO provider.
     pub async fn exchange_refresh_token(
         refresh_token: String,
-    ) -> ApiResult<(Option<String>, String, Option<Duration>)> {
+    ) -> ApiResult<(Option<String>, String, Option<Duration>, Option<String>)> {
         let rt = RefreshToken::new(refresh_token);
 
         let client = Client::cached().await?;
+
+        // Use DokenCapturingClient to intercept the raw response and capture doken
+        let doken_client = DokenCapturingClient::new(&client.http_client);
         let token_response =
-            match client.core_client.exchange_refresh_token(&rt).request_async(&client.http_client).await {
+            match client.core_client.exchange_refresh_token(&rt).request_async(&doken_client).await {
                 Err(err) => err!(format!("Request to exchange_refresh_token endpoint failed: {:?}", err)),
                 Ok(token_response) => token_response,
             };
@@ -247,6 +304,7 @@ impl Client {
             token_response.refresh_token().map(|token| token.secret().clone()),
             token_response.access_token().secret().clone(),
             token_response.expires_in(),
+            doken_client.doken(),
         ))
     }
 }

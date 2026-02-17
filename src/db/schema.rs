@@ -272,6 +272,7 @@ table! {
     sso_users (user_uuid) {
         user_uuid -> Text,
         identifier -> Text,
+        tide_encrypted_key -> Nullable<Text>,
     }
 }
 

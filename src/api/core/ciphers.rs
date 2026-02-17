@@ -21,7 +21,7 @@ use crate::{
         models::{
             Attachment, AttachmentId, Cipher, CipherId, Collection, CollectionCipher, CollectionGroup, CollectionId,
             CollectionUser, EventType, Favorite, Folder, FolderCipher, FolderId, Group, Membership, MembershipType,
-            OrgPolicy, OrgPolicyType, OrganizationId, RepromptType, Send, UserId,
+            OrgPolicy, OrgPolicyType, OrganizationId, RepromptType, Send, SsoUser, UserId,
         },
         DbConn, DbPool,
     },
@@ -183,6 +183,32 @@ async fn sync(data: SyncData, headers: Headers, client_version: Option<ClientVer
         Value::Null
     };
 
+    let tide_cloak_decryption = if CONFIG.tide_enabled() {
+        let voucher_url = if CONFIG.tide_realm().is_empty() {
+            format!("{}/{}", CONFIG.sso_authority(), CONFIG.tide_voucher_path())
+        } else {
+            format!("{}/realms/{}/{}", CONFIG.sso_authority(), CONFIG.tide_realm(), CONFIG.tide_voucher_path())
+        };
+
+        let encrypted_user_key = SsoUser::find_by_user_uuid(&headers.user.uuid, &conn)
+            .await
+            .and_then(|su| su.tide_encrypted_key);
+
+        let mut tide_json = json!({
+            "homeOrkUrl": CONFIG.tide_home_ork_url(),
+            "vendorId": CONFIG.tide_vendor_id(),
+            "voucherUrl": voucher_url,
+            "signedClientOrigin": CONFIG.tide_client_origin_auth(),
+            "encryptedUserKey": encrypted_user_key
+        });
+        if let Some(browser_auth) = CONFIG.tide_client_origin_auth_browser() {
+            tide_json["signedClientOriginBrowser"] = Value::String(browser_auth);
+        }
+        tide_json
+    } else {
+        Value::Null
+    };
+
     Ok(Json(json!({
         "profile": user_json,
         "folders": folders_json,
@@ -193,6 +219,7 @@ async fn sync(data: SyncData, headers: Headers, client_version: Option<ClientVer
         "sends": sends_json,
         "userDecryption": {
             "masterPasswordUnlock": master_password_unlock,
+            "tideCloakDecryption": tide_cloak_decryption,
         },
         "object": "sync"
     })))
