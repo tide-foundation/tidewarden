@@ -93,11 +93,16 @@ if $WEB || $BROWSER; then
     MISSING=1
   fi
 
-  # Check clients submodule is initialized
+  # Auto-init clients submodule if needed
   if [[ ! -f "$CLIENTS_DIR/package.json" ]]; then
-    err "Clients submodule not initialized."
-    echo -e "       Run: ${CYAN}git submodule update --init --recursive${NC}"
-    MISSING=1
+    warn "Clients submodule not initialized. Initializing..."
+    git -C "$ROOT_DIR" submodule update --init --recursive
+    if [[ ! -f "$CLIENTS_DIR/package.json" ]]; then
+      err "Failed to initialize clients submodule."
+      MISSING=1
+    else
+      ok "Clients submodule initialized."
+    fi
   fi
 fi
 
