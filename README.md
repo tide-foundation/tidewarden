@@ -1,20 +1,20 @@
 ![TideWarden Logo](./resources/tidewarden-logo-auto.svg)
 
-A fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) with integrated [TideCloak](https://www.tideprotocol.com/) support for decentralized key management and ORK-based field encryption.
+A fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) with integrated [TideCloak](https://tide.org/tidecloak) support for decentralized key management and zero-knowledge, end-to-end per-field encryption.
 
 ---
 
 ## Why TideWarden?
 
-The fundamental flaw in current password managers is that they function like a physical safe: if thieves steal the database, they can take it offline and use infinite computing power to drill the lock until it breaks. Integrating Tide fundamentally alters this reality by ensuring the master key to that safe never actually exists to be stolen. Instead, Tide transforms your specific browser into a temporary, ephemeral key that decrypts only the exact password you need, strictly for the moment you are using it, while the rest of the vault remains mathematically sealed. This renders a stolen database useless: because the "key" is generated physically on your device and vanishes when you leave, an attacker cannot drag the vault away to crack it, nor can they unlock the full contents even if they compromise the server.
+The fundamental flaw in current password managers is that they function like a physical safe: if anyone steals the database, they can take it offline and use unlimited computing power to drill the lock until it breaks. Integrating Tide fundamentally alters this reality by ensuring the master key to that safe never actually exists to be stolen. Instead, Tide transforms your specific browser into a temporary, ephemeral key that decrypts only the exact password you need, strictly for the moment you are using it, while the rest of the vault remains mathematically sealed. This renders any unauthorized database access useless: because the "key" is generated physically on your device and vanishes when you leave, an attacker cannot drag the vault away to crack it, nor can they unlock the full contents even if they compromise the server.
 
 **Key differences from Vaultwarden / Bitwarden:**
 
-- **No master password** — There is no master key to steal. Keys are generated ephemerally on your device through the ORK threshold network and never persist
-- **Stolen database is useless** — Without the ORK network cooperating in real-time with your authenticated browser, encrypted vault data cannot be decrypted offline
+- **No master password** — There is no master key to steal. Keys are generated through the Tide Decentralized threshold network and never exist together in one place
+- **Stolen database is useless** — Without the network nodes cooperating in real-time with your authenticated browser, encrypted vault data cannot be decrypted
 - **On-demand decryption** — Only the exact field you are viewing is decrypted, only for the moment you need it. The rest of the vault remains sealed
-- **TideCloak SSO** — Authentication through TideCloak (a Keycloak fork with Tide Protocol integration) instead of email/password
-- **ORK field encryption** — Vault fields are encrypted via the ORK network using `EncryptionType 100`, not local AES
+- **TideCloak SSO** — Authentication through TideCloak Zero-Knowledge mechanism (a Keycloak fork with Tide integration) instead of brute-force-susceptible passwords
+- **E2E Per-field encryption** — Vault fields are encrypted via Tide using `Ineffable Cryptography`, not local AES
 - **Chrome MV3** — Browser extension built with Manifest V3
 
 ## Architecture
@@ -22,15 +22,15 @@ The fundamental flaw in current password managers is that they function like a p
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │   Browser    │     │  TideWarden  │     │  TideCloak   │
-│  Extension   │────▶│    Server    │────▶│   (IdP)      │
+│  Extension   │────>│    Server    │────>│   (IiAM)     │
 │  / Web Vault │     │ (Rust/Rocket)│     │              │
-└──────┬───────┘     └──────────────┘     └──────────────┘
-       │
-       │  encrypt/decrypt
-       ▼
-┌──────────────┐
-│  ORK Network │
-│  (Threshold  │
+└──────┬───────┘     └──────────────┘     └──────┬───────┘
+       │                                         │
+       │  encrypt/decrypt                        │ ZK-Auth
+       ▼                                         │
+┌──────────────┐                                 │
+│ Tide Fabric  │                                 │
+│  (Threshold  │ <───────────────────────────────┘
 │   Crypto)    │
 └──────────────┘
 ```
@@ -43,9 +43,9 @@ The fundamental flaw in current password managers is that they function like a p
 Everything from Vaultwarden, plus:
 
 - TideCloak SSO login (OIDC with vendor_data exchange)
-- ORK-encrypted vault fields (login credentials, notes, card details, identity fields)
-- Doken-based authorization for ORK operations
-- On-demand decryption (bulk vault loads skip ORK, individual items decrypt on view)
+- Tide-encrypted vault fields (login credentials, notes, card details, identity fields)
+- Doken-based authorization for Tide Fabric operations
+- On-demand decryption (bulk vault loads, individual items decrypt on view)
 - Browser extension with MV3 manifest
 - Configurable via environment variables (`TIDE_ENABLED`, `TIDE_HOME_ORK_URL`, etc.)
 
@@ -102,14 +102,12 @@ Copy `.env.template` to `.env` and set the following variables. All of these are
 DOMAIN=http://localhost:8000
 ROCKET_PORT=8000
 WEB_VAULT_ENABLED=true
-
 # SSO (public client, no secret needed)
 SSO_ENABLED=true
 SSO_AUTHORITY=https://your-tidecloak-host/realms/your-realm
 SSO_CLIENT_ID=your-client-id
 SSO_PKCE=true
 SSO_ONLY=true
-
 # TideCloak
 TIDE_ENABLED=true
 TIDE_VENDOR_ID=your-vendor-id
@@ -145,7 +143,7 @@ LOG_LEVEL=debug
 
 - Server: [dani-garcia/vaultwarden](https://github.com/dani-garcia/vaultwarden)
 - Clients: [bitwarden/clients](https://github.com/bitwarden/clients)
-- Tide Protocol: [tide-foundation](https://www.tideprotocol.com/)
+- TideCloak: [tidecloak website](https://tide.org/tidecloak)
 
 ## License
 
