@@ -74,7 +74,7 @@ pub async fn initialize_keys() -> Result<(), Error> {
         let rsa_key = Rsa::generate(2048)?;
         let priv_key_buffer = rsa_key.private_key_to_pem()?;
         operator.write(&rsa_key_filename, priv_key_buffer.clone()).await?;
-        info!("Private key '{}' created correctly", CONFIG.private_rsa_key());
+        debug!("Private key '{}' created", CONFIG.private_rsa_key());
         (rsa_key, priv_key_buffer)
     };
     let pub_key_buffer = priv_key.public_key_to_pem()?;

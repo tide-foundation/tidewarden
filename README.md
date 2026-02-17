@@ -95,19 +95,51 @@ After building, load the extension from `clients/apps/browser/build/` in Chrome/
 
 ## Configuration
 
-TideCloak-specific environment variables (set in `.env`):
+Copy `.env.template` to `.env` and set the following variables. All of these are **required** for TideWarden to work:
 
-| Variable | Description |
-|----------|-------------|
-| `TIDE_ENABLED` | Enable TideCloak integration (`true`/`false`) |
-| `SSO_ENABLED` | Enable SSO (`true`) |
-| `SSO_AUTHORITY` | TideCloak base URL |
-| `SSO_CLIENT_ID` | OIDC client ID |
-| `SSO_CLIENT_SECRET` | OIDC client secret |
-| `TIDE_HOME_ORK_URL` | Home ORK endpoint URL |
-| `TIDE_VOUCHER_PATH` | Voucher endpoint path |
-| `TIDE_REALM` | TideCloak realm name |
-| `TIDE_VENDOR_ID` | Vendor ID for ORK operations |
+```env
+# Server
+DOMAIN=http://localhost:8000
+ROCKET_PORT=8000
+WEB_VAULT_ENABLED=true
+
+# SSO (public client, no secret needed)
+SSO_ENABLED=true
+SSO_AUTHORITY=https://your-tidecloak-host/realms/your-realm
+SSO_CLIENT_ID=your-client-id
+SSO_PKCE=true
+SSO_ONLY=true
+
+# TideCloak
+TIDE_ENABLED=true
+TIDE_VENDOR_ID=your-vendor-id
+TIDE_HOME_ORK_URL=https://your-ork-endpoint
+TIDE_CLIENT_ORIGIN_AUTH=your-base64-auth-key
+TIDE_CLIENT_ORIGIN_AUTH_BROWSER=your-base64-browser-auth-key
+```
+
+Optional debugging settings:
+
+```env
+SSO_DEBUG_TOKENS=true
+LOG_LEVEL=debug
+```
+
+### Variable reference
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DOMAIN` | Yes | Full URL including port where TideWarden is hosted |
+| `SSO_ENABLED` | Yes | Must be `true` to enable SSO login |
+| `SSO_AUTHORITY` | Yes | TideCloak OIDC discovery base URL (`{url}/.well-known/openid-configuration` must be valid) |
+| `SSO_CLIENT_ID` | Yes | OIDC client ID configured in TideCloak |
+| `SSO_PKCE` | Yes | Enable PKCE for the auth code flow (recommended `true`) |
+| `SSO_ONLY` | Yes | Disable email+password login, require SSO |
+| `TIDE_ENABLED` | Yes | Enable TideCloak integration |
+| `TIDE_VENDOR_ID` | Yes | Vendor ID for ORK operations |
+| `TIDE_HOME_ORK_URL` | Yes | Home ORK endpoint URL |
+| `TIDE_CLIENT_ORIGIN_AUTH` | Yes | Base64-encoded client origin auth key (server-side) |
+| `TIDE_CLIENT_ORIGIN_AUTH_BROWSER` | Yes | Base64-encoded client origin auth key (browser-side) |
 
 ## Upstream
 

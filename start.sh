@@ -142,7 +142,7 @@ fi
 if $WEB && ! $SKIP_BUILD; then
   log "Building web vault..."
   cd "$CLIENTS_DIR/apps/web"
-  npx webpack --mode development 2>&1 | tail -5
+  ENV=selfhosted npx webpack --mode development 2>&1 | tail -5
   log "Copying web vault to $WEB_VAULT_DIR..."
   rm -rf "$WEB_VAULT_DIR"
   mv build "$WEB_VAULT_DIR"
