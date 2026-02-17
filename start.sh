@@ -134,7 +134,7 @@ if ($WEB || $BROWSER) && ! $SKIP_BUILD; then
   if [[ ! -d "$CLIENTS_DIR/node_modules" ]]; then
     log "Installing client dependencies..."
     cd "$CLIENTS_DIR"
-    npm ci
+    npm install
     ok "Dependencies installed."
   fi
 fi
