@@ -61,11 +61,7 @@ Everything from Vaultwarden, plus:
 ```bash
 # Clone with submodules
 git clone --recurse-submodules https://github.com/sashyo/vaultwarden.git
-cd vaultwarden
-
-# Copy and edit environment config
-cp .env.template .env
-# Edit .env — set TIDE_ENABLED=true, SSO_*, TIDE_* variables
+cd vaultwarden/scripts
 
 # Build everything and start
 ./start.sh
