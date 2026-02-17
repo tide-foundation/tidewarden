@@ -1,0 +1,14 @@
+<svg viewBox="0 0 290 45" xmlns="http://www.w3.org/2000/svg">
+<style>
+  @media (prefers-color-scheme: dark) {
+    .tw-fill { fill: #FFF; }
+  }
+  @media (prefers-color-scheme: light) {
+    .tw-fill { fill: #175DDC; }
+  }
+</style>
+    <title>TideWarden</title>
+    <!-- TideWarden shield with wave cutout -->
+    <path class="tw-fill" fill="#175DDC" fill-rule="evenodd" d="M19 1 L37 5 V24 C37 32 29 39 19 43 C9 39 1 32 1 24 V5 Z M4 19.5 C8 14.5 13 14.5 19 19.5 C25 24.5 30 24.5 34 19.5 V24.5 C30 29.5 25 29.5 19 24.5 C13 19.5 8 19.5 4 24.5 Z"/>
+    <text class="tw-fill" fill="#175DDC" x="46" y="33" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="28" font-weight="600">TideWarden</text>
+</svg>
