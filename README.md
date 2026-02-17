@@ -12,9 +12,9 @@ Traditional password managers force a choice between convenience and security. M
 
 - **True cryptographic keys, not password-derived encryption.** Traditional password managers derive encryption keys from your master password, which means attackers can brute-force stolen vaults offline. TideWarden uses proper cryptographic keys generated through Tide's Cybersecurity Fabric, giving you fully encrypted data, without risk of exposing the key
 - **No key to steal, manage, or trust to a vendor.** The cryptographic key that protects your vault never exists in complete form anywhere. It's generated across a decentralized network. You don't have to remember it, back it up, or trust anyone to safeguard it
-- **Stolen database is useless.** Without the decentralized network cooperating in real-time with your authenticated browser, encrypted vault data cannot be decrypted offline
+- **Stolen database is useless.** Without the decentralized network cooperating in real-time with your authenticated browser, encrypted vault data cannot be decrypted
 - **On-demand decryption.** Only the exact field you are viewing is decrypted, just-in-time, and only on the device you successfully authenticated from by binding with an ephemeral session key that only lives on your device TPM.
-- **TideCloak SSO.** Zero-knowledge authentication where you prove your identity without exposing credentials. No password hashes are stored anywhere; not even TideCloak administrators can impersonate users or access credentials
+- **TideCloak SSO.** Authentication through TideCloak's Zero-Knowledge mechanism (a Keycloak fork with Tide integration) instead of brute-force-susceptible passwords
 - **Chrome MV3** — Browser extension built with Manifest V3
 
 ## Architecture
@@ -125,19 +125,19 @@ LOG_LEVEL=debug
 
 ### Variable reference
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DOMAIN` | Yes | Full URL including port where TideWarden is hosted |
-| `SSO_ENABLED` | Yes | Must be `true` to enable SSO login |
-| `SSO_AUTHORITY` | Yes | TideCloak OIDC discovery base URL (`{url}/.well-known/openid-configuration` must be valid) |
-| `SSO_CLIENT_ID` | Yes | OIDC client ID configured in TideCloak |
-| `SSO_PKCE` | Yes | Enable PKCE for the auth code flow (recommended `true`) |
-| `SSO_ONLY` | Yes | Disable email+password login, require SSO |
-| `TIDE_ENABLED` | Yes | Enable TideCloak integration |
-| `TIDE_VENDOR_ID` | Yes | Vendor ID for ORK operations |
-| `TIDE_HOME_ORK_URL` | Yes | Home ORK endpoint URL |
-| `TIDE_CLIENT_ORIGIN_AUTH` | Yes | Base64-encoded client origin auth key (server-side) |
-| `TIDE_CLIENT_ORIGIN_AUTH_BROWSER` | Yes | Base64-encoded client origin auth key (browser-side) |
+| Variable                            | Required | Description                                                                                  |
+| ----------------------------------- | -------- | -------------------------------------------------------------------------------------------- |
+| `DOMAIN`                          | Yes      | Full URL including port where TideWarden is hosted                                           |
+| `SSO_ENABLED`                     | Yes      | Must be `true` to enable SSO login                                                         |
+| `SSO_AUTHORITY`                   | Yes      | TideCloak OIDC discovery base URL (`{url}/.well-known/openid-configuration` must be valid) |
+| `SSO_CLIENT_ID`                   | Yes      | OIDC client ID configured in TideCloak                                                       |
+| `SSO_PKCE`                        | Yes      | Enable PKCE for the auth code flow (recommended `true`)                                    |
+| `SSO_ONLY`                        | Yes      | Disable email+password login, require SSO                                                    |
+| `TIDE_ENABLED`                    | Yes      | Enable TideCloak integration                                                                 |
+| `TIDE_VENDOR_ID`                  | Yes      | Vendor ID for ORK operations                                                                 |
+| `TIDE_HOME_ORK_URL`               | Yes      | Home ORK endpoint URL                                                                        |
+| `TIDE_CLIENT_ORIGIN_AUTH`         | Yes      | Base64-encoded client origin auth key (server-side)                                          |
+| `TIDE_CLIENT_ORIGIN_AUTH_BROWSER` | Yes      | Base64-encoded client origin auth key (browser-side)                                         |
 
 ## Upstream
 
