@@ -96,6 +96,7 @@ pub type CustomClient = openidconnect::Client<
 pub struct Client {
     pub http_client: reqwest::Client,
     pub core_client: CustomClient,
+    pub end_session_endpoint: Option<String>,
 }
 
 impl Client {
@@ -114,6 +115,10 @@ impl Client {
             Err(err) => err!(format!("Failed to build http client: {err}")),
             Ok(client) => client,
         };
+
+        // Fetch the OIDC discovery document raw to extract end_session_endpoint
+        // (not exposed by the CoreProviderMetadata type which uses EmptyAdditionalProviderMetadata)
+        let end_session_endpoint = Self::_discover_end_session_endpoint(&http_client).await;
 
         let provider_metadata = match CoreProviderMetadata::discover_async(issuer_url, &http_client).await {
             Err(err) => err!(format!("Failed to discover OpenID provider: {err}")),
@@ -140,7 +145,18 @@ impl Client {
         Ok(Client {
             http_client,
             core_client,
+            end_session_endpoint,
         })
+    }
+
+    async fn _discover_end_session_endpoint(http_client: &reqwest::Client) -> Option<String> {
+        let authority = CONFIG.sso_authority();
+        let discovery_url = format!("{}/.well-known/openid-configuration", authority.trim_end_matches('/'));
+        let response = http_client.get(&discovery_url).send().await.ok()?;
+        let json: serde_json::Value = response.json().await.ok()?;
+        let url = json.get("end_session_endpoint")?.as_str()?.to_string();
+        debug!("Discovered end_session_endpoint: {}", url);
+        Some(url)
     }
 
     // Simple cache to prevent recalling the discovery endpoint each time

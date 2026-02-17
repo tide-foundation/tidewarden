@@ -30,7 +30,7 @@ use crate::{
         DbConn,
     },
     error::MapResult,
-    mail, sso,
+    mail, sso, sso_client,
     sso::{OIDCCode, OIDCCodeChallenge, OIDCCodeVerifier, OIDCState},
     util, CONFIG,
 };
@@ -513,12 +513,7 @@ async fn authenticated_response(
     };
 
     let tide_cloak_decryption = if CONFIG.tide_enabled() {
-        let base_voucher_url = if CONFIG.tide_realm().is_empty() {
-            format!("{}/{}", CONFIG.sso_authority(), CONFIG.tide_voucher_path())
-        } else {
-            format!("{}/realms/{}/{}", CONFIG.sso_authority(), CONFIG.tide_realm(), CONFIG.tide_voucher_path())
-        };
-        // Append sessionId from the SSO access token's sid claim
+        let base_voucher_url = format!("{}/{}", CONFIG.sso_authority(), CONFIG.tide_voucher_path());
         let voucher_url = match &sso_session_id {
             Some(sid) => {
                 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -580,6 +575,16 @@ async fn authenticated_response(
 
     if let Some(ref dk) = doken {
         result["doken"] = Value::String(dk.clone());
+    }
+
+    // Include the SSO provider's end_session_endpoint so the client can redirect
+    // to it on logout (clearing the IdP session, not just the local session).
+    if CONFIG.sso_enabled() {
+        if let Ok(client) = sso_client::Client::cached().await {
+            if let Some(ref url) = client.end_session_endpoint {
+                result["SsoEndSessionEndpoint"] = Value::String(url.clone());
+            }
+        }
     }
 
     info!("User {} logged in successfully. IP: {}", user.display_name(), ip.ip);
@@ -1245,3 +1250,4 @@ async fn authorize(data: AuthorizeData, conn: DbConn) -> ApiResult<Redirect> {
 
     Ok(Redirect::temporary(String::from(auth_url)))
 }
+

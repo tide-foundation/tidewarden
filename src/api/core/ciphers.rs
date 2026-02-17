@@ -184,11 +184,7 @@ async fn sync(data: SyncData, headers: Headers, client_version: Option<ClientVer
     };
 
     let tide_cloak_decryption = if CONFIG.tide_enabled() {
-        let voucher_url = if CONFIG.tide_realm().is_empty() {
-            format!("{}/{}", CONFIG.sso_authority(), CONFIG.tide_voucher_path())
-        } else {
-            format!("{}/realms/{}/{}", CONFIG.sso_authority(), CONFIG.tide_realm(), CONFIG.tide_voucher_path())
-        };
+        let voucher_url = format!("{}/{}", CONFIG.sso_authority(), CONFIG.tide_voucher_path());
 
         let encrypted_user_key = SsoUser::find_by_user_uuid(&headers.user.uuid, &conn)
             .await
