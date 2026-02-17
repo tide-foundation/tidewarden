@@ -1,6 +1,6 @@
 ![TideWarden Logo](./resources/tidewarden-logo-auto.svg)
 
-A fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) with integrated [TideCloak](https://www.tideprotocol.com/) support for decentralized key management and field encryption powered by Tide's Cybersecurity Fabric.
+A fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) with integrated [TideCloak](https://tide.org/tidecloak) support for decentralized key management and zero-knowledge, end-to-end per-field encryption.
 
 ---
 
@@ -22,16 +22,16 @@ Traditional password managers force a choice between convenience and security. M
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │   Browser    │     │  TideWarden  │     │  TideCloak   │
-│  Extension   │────▶│    Server    │────▶│   (IdP)      │
+│  Extension   │────>│    Server    │────>│   (IiAM)     │
 │  / Web Vault │     │ (Rust/Rocket)│     │              │
-└──────┬───────┘     └──────────────┘     └──────────────┘
-       │
-       │  encrypt/decrypt
-       ▼
-┌──────────────┐
-│    Tide's    │
-│ Cybersecurity│
-│    Fabric    │
+└──────┬───────┘     └──────────────┘     └──────┬───────┘
+       │                                         │
+       │  encrypt/decrypt                        │ ZK-Auth
+       ▼                                         │
+┌──────────────┐                                 │
+│ Tide Fabric  │                                 │
+│  (Threshold  │ <───────────────────────────────┘
+│   Crypto)    │
 └──────────────┘
 ```
 
@@ -43,9 +43,9 @@ Traditional password managers force a choice between convenience and security. M
 Everything from Vaultwarden, plus:
 
 - TideCloak SSO login (OIDC with vendor_data exchange)
-- Decentralized vault field encryption (login credentials, notes, card details, identity fields)
-- Doken-based authorization for cryptographic operations
-- On-demand decryption (bulk vault loads skip decryption, individual items decrypt on view)
+- Tide-encrypted vault fields (login credentials, notes, card details, identity fields)
+- Doken-based authorization for Tide Fabric operations
+- On-demand decryption (bulk vault loads, individual items decrypt on view)
 - Browser extension with MV3 manifest
 - Configurable via environment variables (`TIDE_ENABLED`, `TIDE_HOME_ORK_URL`, etc.)
 
@@ -102,14 +102,12 @@ Copy `.env.template` to `.env` and set the following variables. All of these are
 DOMAIN=http://localhost:8000
 ROCKET_PORT=8000
 WEB_VAULT_ENABLED=true
-
 # SSO (public client, no secret needed)
 SSO_ENABLED=true
 SSO_AUTHORITY=https://your-tidecloak-host/realms/your-realm
 SSO_CLIENT_ID=your-client-id
 SSO_PKCE=true
 SSO_ONLY=true
-
 # TideCloak
 TIDE_ENABLED=true
 TIDE_VENDOR_ID=your-vendor-id
@@ -145,7 +143,7 @@ LOG_LEVEL=debug
 
 - Server: [dani-garcia/vaultwarden](https://github.com/dani-garcia/vaultwarden)
 - Clients: [bitwarden/clients](https://github.com/bitwarden/clients)
-- Tide Protocol: [tide-foundation](https://www.tide.org/)
+- TideCloak: [tidecloak website](https://tide.org/tidecloak)
 
 ## License
 
