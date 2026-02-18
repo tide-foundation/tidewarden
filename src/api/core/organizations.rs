@@ -1082,7 +1082,7 @@ async fn send_invite(
     data: Json<InviteData>,
     headers: AdminHeaders,
     conn: DbConn,
-) -> EmptyResult {
+) -> JsonResult {
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
@@ -1110,6 +1110,12 @@ async fn send_invite(
             && data.permissions.get("deleteAnyCollection") == Some(&json!(true))
             && data.permissions.get("createNewCollections") == Some(&json!(true)));
 
+    let org_name = match Organization::find_by_uuid(&org_id, &conn).await {
+        Some(org) => org.name,
+        None => err!("Error looking up organization"),
+    };
+
+    let mut invite_links = Vec::new();
     let mut user_created: bool = false;
     for email in data.emails.iter() {
         let mut member_status = MembershipStatus::Invited as i32;
@@ -1151,12 +1157,19 @@ async fn send_invite(
         new_member.status = member_status;
         new_member.save(&conn).await?;
 
-        if CONFIG.mail_enabled() {
-            let org_name = match Organization::find_by_uuid(&org_id, &conn).await {
-                Some(org) => org.name,
-                None => err!("Error looking up organization"),
-            };
+        let invite_url = mail::generate_invite_url(
+            &user,
+            org_id.clone(),
+            new_member.uuid.clone(),
+            &org_name,
+            Some(headers.user.email.clone()),
+        );
+        invite_links.push(json!({
+            "email": email,
+            "link": invite_url,
+        }));
 
+        if CONFIG.mail_enabled() {
             if let Err(e) = mail::send_invite(
                 &user,
                 org_id.clone(),
@@ -1214,7 +1227,9 @@ async fn send_invite(
         }
     }
 
-    Ok(())
+    Ok(Json(json!({
+        "data": invite_links,
+    })))
 }
 
 #[post("/organizations/<org_id>/users/reinvite", data = "<data>")]

@@ -217,7 +217,7 @@ impl Client {
         code: OIDCCode,
         client_verifier: OIDCCodeVerifier,
         sso_auth: &SsoAuth,
-    ) -> ApiResult<(CoreTokenResponse, IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, Option<String>)> {
+    ) -> ApiResult<(CoreTokenResponse, IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, Option<String>, Option<String>)> {
         let oidc_code = AuthorizationCode::new(code.to_string());
 
         let mut exchange = self.core_client.exchange_code(oidc_code);
@@ -261,7 +261,8 @@ impl Client {
                     }
                 };
 
-                Ok((token_response, id_claims, doken_client.doken()))
+                let raw_id_token = Some(id_token.to_string());
+                Ok((token_response, id_claims, doken_client.doken(), raw_id_token))
             }
         }
     }

@@ -1553,6 +1553,18 @@ fn load_tidecloak_config(builder: &mut ConfigBuilder) {
             builder.tide_client_origin_auth = Some(v.to_string());
         }
     }
+
+    // Look up client-origin-auth for browser extension (chrome-extension://...)
+    if let Some(obj) = json.as_object() {
+        for (key, value) in obj {
+            if key.starts_with("client-origin-auth-chrome-extension://") {
+                if let Some(v) = value.as_str() {
+                    builder.tide_client_origin_auth_browser = Some(v.to_string());
+                    break;
+                }
+            }
+        }
+    }
 }
 
 impl Config {

@@ -307,8 +307,9 @@ async fn _sso_login(
     // Set the user_uuid here to be passed back used for event logging.
     *user_id = Some(user.uuid.clone());
 
-    // Extract the doken and SSO session ID before redeem consumes user_infos
+    // Extract the doken, id_token, and SSO session ID before redeem consumes user_infos
     let doken = user_infos.doken.clone();
+    let sso_id_token = user_infos.id_token.clone();
     // Extract sid from the SSO access token for the voucher URL
     let sso_session_id = if CONFIG.tide_enabled() {
         sso::extract_session_id(&user_infos.access_token)
@@ -319,7 +320,7 @@ async fn _sso_login(
     // We passed 2FA get auth tokens
     let auth_tokens = sso::redeem(&device, &user, data.client_id, sso_user, sso_auth, user_infos, conn).await?;
 
-    authenticated_response(&user, &mut device, auth_tokens, twofactor_token, doken, sso_session_id, conn, ip).await
+    authenticated_response(&user, &mut device, auth_tokens, twofactor_token, doken, sso_id_token, sso_session_id, conn, ip).await
 }
 
 async fn _password_login(
@@ -441,7 +442,7 @@ async fn _password_login(
 
     let auth_tokens = auth::AuthTokens::new(&device, &user, AuthMethod::Password, data.client_id);
 
-    authenticated_response(&user, &mut device, auth_tokens, twofactor_token, None, None, conn, ip).await
+    authenticated_response(&user, &mut device, auth_tokens, twofactor_token, None, None, None, conn, ip).await
 }
 
 async fn authenticated_response(
@@ -450,6 +451,7 @@ async fn authenticated_response(
     auth_tokens: auth::AuthTokens,
     twofactor_token: Option<String>,
     doken: Option<String>,
+    sso_id_token: Option<String>,
     sso_session_id: Option<String>,
     conn: &DbConn,
     ip: &ClientIp,
@@ -585,6 +587,11 @@ async fn authenticated_response(
                 result["SsoEndSessionEndpoint"] = Value::String(url.clone());
             }
         }
+        result["SsoClientId"] = Value::String(CONFIG.sso_client_id());
+    }
+
+    if let Some(ref id_token) = sso_id_token {
+        result["SsoIdTokenHint"] = Value::String(id_token.clone());
     }
 
     info!("User {} logged in successfully. IP: {}", user.display_name(), ip.ip);

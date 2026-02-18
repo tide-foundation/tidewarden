@@ -277,13 +277,13 @@ pub async fn send_single_org_removed_from_org(address: &str, org_name: &str) -> 
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_invite(
+pub fn generate_invite_url(
     user: &User,
     org_id: OrganizationId,
     member_id: MembershipId,
     org_name: &str,
     invited_by_email: Option<String>,
-) -> EmptyResult {
+) -> String {
     let claims = generate_invite_claims(
         user.uuid.clone(),
         user.email.clone(),
@@ -310,15 +310,23 @@ pub async fn send_invite(
         }
     }
 
-    let Some(query_string) = query.query() else {
-        err!("Failed to build invite URL query parameters")
-    };
+    let query_string = query.query().unwrap_or_default();
+    format!("{}/#/accept-organization/?{query_string}", CONFIG.domain())
+}
+
+pub async fn send_invite(
+    user: &User,
+    org_id: OrganizationId,
+    member_id: MembershipId,
+    org_name: &str,
+    invited_by_email: Option<String>,
+) -> EmptyResult {
+    let url = generate_invite_url(user, org_id, member_id, org_name, invited_by_email);
 
     let (subject, body_html, body_text) = get_text(
         "email/send_org_invite",
         json!({
-            // `url.Url` would place the anchor `#` after the query parameters
-            "url": format!("{}/#/accept-organization/?{query_string}", CONFIG.domain()),
+            "url": url,
             "img_src": CONFIG._smtp_img_src(),
             "org_name": org_name,
         }),

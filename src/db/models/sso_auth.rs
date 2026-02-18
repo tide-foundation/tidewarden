@@ -40,6 +40,9 @@ pub struct OIDCAuthenticatedUser {
     /// TideCloak delegated token for ORK-mediated encryption/decryption.
     #[serde(default)]
     pub doken: Option<String>,
+    /// Raw OIDC id_token for use as id_token_hint during logout.
+    #[serde(default)]
+    pub id_token: Option<String>,
 }
 
 impl_FromToSqlText!(OIDCAuthenticatedUser);

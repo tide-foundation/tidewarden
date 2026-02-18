@@ -288,7 +288,7 @@ pub async fn exchange_code(
     };
 
     let client = Client::cached().await?;
-    let (token_response, id_claims, doken) = client.exchange_code(code, client_verifier, &sso_auth).await?;
+    let (token_response, id_claims, doken, raw_id_token) = client.exchange_code(code, client_verifier, &sso_auth).await?;
 
     let user_info = client.user_info(token_response.access_token().to_owned()).await?;
 
@@ -317,6 +317,7 @@ pub async fn exchange_code(
         email_verified,
         user_name: user_name.clone(),
         doken,
+        id_token: raw_id_token,
     };
 
     debug!("Authenticated user {authenticated_user:?}");
