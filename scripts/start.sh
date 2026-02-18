@@ -15,6 +15,6 @@ sudo docker run \
 
 export SCRIPT_DIR=$(dirname "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)")
 export TIDECLOAK_LOCAL_URL=http://localhost:8080
-mkdir ../../data
+mkdir ../data
 bash ./init-tidecloak.sh
 bash ./tidewarden-start.sh

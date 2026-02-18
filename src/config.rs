@@ -839,8 +839,10 @@ make_config! {
         tide_vendor_id:                 String, true,   def,    String::new();
         /// Home ORK URL |> Read from tidecloak.json homeOrkUrl field
         tide_home_ork_url:              String, true,   option;
-        /// Voucher path |> Path appended to SSO authority for voucher retrieval
+        /// Voucher path |> Path appended to voucher base URL for voucher retrieval
         tide_voucher_path:              String, true,   def,    "tidevouchers/fromUserSession".to_string();
+        /// Voucher base URL |> Public URL override for voucher requests (e.g. cloudflared tunnel). When set, voucher URLs use this instead of SSO_AUTHORITY so the Tide SDK enclave can reach TideCloak without Chrome PNA blocking.
+        tide_voucher_base_url:          String, true,   option;
         /// Realm |> Read from tidecloak.json realm field
         tide_realm:                     String, true,   def,    String::new();
         /// Signed Client Origin |> Read from tidecloak.json client-origin-auth-{DOMAIN} field
