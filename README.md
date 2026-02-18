@@ -47,7 +47,6 @@ Everything from Vaultwarden, plus:
 - Doken-based authorization for Tide Fabric operations
 - On-demand decryption (bulk vault loads, individual items decrypt on view)
 - Browser extension with MV3 manifest
-- Configurable via environment variables (`TIDE_ENABLED`, `TIDE_HOME_ORK_URL`, etc.)
 
 ## Prerequisites
 
@@ -68,57 +67,6 @@ cd tidewarden/scripts
 ```
 
 The start script builds the server, web vault, and browser extension, then starts vaultwarden on `http://localhost:8000`.
-
-### Script options
-
-```
-./start.sh                 # Build all + start server
-./start.sh --skip-build    # Start server without building
-./start.sh --server-only   # Build + run server only
-./start.sh --clients-only  # Build web vault + browser extension only
-./start.sh --web-only      # Build web vault only
-./start.sh --browser-only  # Build browser extension (MV3) only
-./start.sh --release       # Cargo release build
-```
-
-### Loading the browser extension
-
-After building, load the extension from `clients/apps/browser/build/` in Chrome/Edge:
-
-1. Go to `chrome://extensions`
-2. Enable "Developer mode"
-3. Click "Load unpacked" and select the `build/` directory
-
-## Configuration
-
-Copy `.env.template` to `.env` and set the following variables. All of these are **required** for TideWarden to work:
-
-```env
-# Server
-DOMAIN=http://localhost:3000
-ROCKET_PORT=3000
-WEB_VAULT_ENABLED=true
-# SSO (public client, no secret needed)
-SSO_ENABLED=true
-SSO_PKCE=true
-SSO_ONLY=true
-```
-
-Optional debugging settings:
-
-```env
-SSO_DEBUG_TOKENS=true
-LOG_LEVEL=debug
-```
-
-### Variable reference
-
-| Variable                            | Required | Description                                                                                  |
-| ----------------------------------- | -------- | -------------------------------------------------------------------------------------------- |
-| `DOMAIN`                          | Yes      | Full URL including port where TideWarden is hosted                                           |
-| `SSO_ENABLED`                     | Yes      | Must be `true` to enable SSO login                                                         |
-| `SSO_PKCE`                        | Yes      | Enable PKCE for the auth code flow (recommended `true`)                                    |
-| `SSO_ONLY`                        | Yes      | Disable email+password login, require SSO                                                    |
 
 ## Upstream
 
