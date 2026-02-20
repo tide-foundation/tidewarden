@@ -1,21 +1,26 @@
-![TideWarden Logo](./resources/tidewarden-logo-auto.svg)
+<img src="./resources/tidewarden-logo-auto.svg" alt="TideWarden Logo" width="600" />
 
-A fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) with integrated [TideCloak](https://tide.org/tidecloak) support for decentralized key management and zero-knowledge, end-to-end per-field encryption.
+![Status](https://img.shields.io/badge/status-proof--of--concept-orange)
+
+An open-source proof-of-concept prompted by [ETH Zurich&#39;s research](https://ethz.ch/en/news-and-events/eth-news/news/2026/02/password-managers-less-secure-than-promised.html), which documented 25 vulnerabilities showing how a compromised password manager server can silently steal your credentials. Built to demonstrate that the architecture can be redesigned so a compromised server simply can't. Using a fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) wired to [TideCloak](https://docs.tidecloak.com/) for decentralized key management and zero-knowledge, end-to-end per-field encryption.
 
 ---
 
-## Why TideWarden?
+## What this PoC demonstrates
 
-Traditional password managers force a choice between convenience and security. Most opt for convenience, filling the gap with promises that often [prove unfounded](https://www.itnews.com.au/news/researchers-find-critical-vulnerabilities-in-cloud-based-password-managers-623661). TideWarden offers a different approach, built on two assumptions: that servers should be treated as potentially hostile, and that users shouldn't be burdened with key management. By integrating with Tide's Cybersecurity Fabric, cryptographic keys (used to authenticate the user and encrypt their passwords) are generated and operated across a decentralized network, never materializing anywhere in full or trusted to anyone. A compromised server cannot expose secrets or elevate privileges. Users never need to remember, store, or safeguard a master key.
+Traditional password managers face a choice between offering better security or convenience. Most opt for convenience by acting as a trusted intermediary that manages keys and encryption on the user's behalf, making themselves a blindly trusted cog accompanied by security promises ETH Zurich's research proved are often unfounded.
 
-**Key differences from Vaultwarden / Bitwarden:**
+By wiring Vaultwarden to TideCloak, cryptographic keys, used to authenticate users and encrypt data, are generated and operated across a decentralized network, never materializing in full anywhere, and never trusted to any single party. A compromised server cannot expose vault contents or elevate its own privileges, because no one ever holds the keys needed to do either.
 
-- **True cryptographic keys, not password-derived encryption.** Traditional password managers derive encryption keys from your master password, which means attackers can brute-force stolen vaults offline. TideWarden uses proper cryptographic keys generated through Tide's Cybersecurity Fabric, giving you fully encrypted data, without risk of exposing the key
-- **No key to steal, manage, or trust to a vendor.** The cryptographic key that protects your vault never exists in complete form anywhere. It's generated across a decentralized network. You don't have to remember it, back it up, or trust anyone to safeguard it
-- **Stolen database is useless.** Without the decentralized network cooperating in real-time with your authenticated browser, encrypted vault data cannot be decrypted
-- **On-demand decryption.** Only the exact field you are viewing is decrypted, just-in-time, and only on the device you successfully authenticated from by binding with an ephemeral session key that only lives on your device TPM.
-- **TideCloak SSO.** Authentication through TideCloak's Zero-Knowledge mechanism (a Keycloak fork with Tide integration) instead of brute-force-susceptible passwords
-- **Chrome MV3** — Browser extension built with Manifest V3
+**Specifically:**
+
+- **Keys cannot be brute-forced.** Traditional managers derive encryption keys from your master password, making stolen vaults crackable offline. Here, data is locked with 256-bit elliptic curve keys.
+- **There's no key to steal from the server.** Those keys never exist in complete form on any single machine. A server breach yields encrypted data with no path to decryption.
+- **Decryption requires live network consensus.** Even with the entire encrypted database in hand, decryption requires the decentralized network cooperating in real-time with an authenticated session. Exfiltrated data alone gets you nowhere.
+- **Decryption is scoped to exactly what you're viewing.** Only the specific data in use is decrypted, just-in-time, bound to an ephemeral session key on the authenticated user's device (TPM).
+- **Authentication doesn't rely on brute-force-susceptible passwords.** Login goes through TideCloak's zero-knowledge mechanism rather than a traditional master password.
+
+Note: This is a research prototype, not a hardened production deployment.
 
 ## Architecture
 
@@ -44,7 +49,7 @@ Everything from Vaultwarden, plus:
 
 - TideCloak SSO login (OIDC with vendor_data exchange)
 - Tide-encrypted vault fields (login credentials, notes, card details, identity fields)
-- Doken-based authorization for Tide Fabric operations
+- Doken-based authorization for decentralized cryptographic operations
 - On-demand decryption (bulk vault loads, individual items decrypt on view)
 - Browser extension with MV3 manifest
 
@@ -55,7 +60,7 @@ Everything from Vaultwarden, plus:
 - **System packages**: `libssl-dev`, `pkg-config`, `build-essential`
 - A running **TideCloak** instance configured with your realm and vendor
 
-## Quick Start
+## Try it yourself
 
 ```bash
 # Clone with submodules
@@ -72,7 +77,7 @@ The start script builds the server, web vault, and browser extension, then start
 
 - Server: [dani-garcia/vaultwarden](https://github.com/dani-garcia/vaultwarden)
 - Clients: [bitwarden/clients](https://github.com/bitwarden/clients)
-- TideCloak: [tidecloak website](https://tide.org/tidecloak)
+- TideCloak: [docs.tidecloak.com](https://docs.tidecloak.com/)
 
 ## License
 
