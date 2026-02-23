@@ -2,13 +2,13 @@
 
 ![Status](https://img.shields.io/badge/status-proof--of--concept-orange)
 
-An open-source "trustless password manager" proof-of-concept prompted by [ETH Zurich&#39;s research](https://ethz.ch/en/news-and-events/eth-news/news/2026/02/password-managers-less-secure-than-promised.html), which documented 25 vulnerabilities showing how a compromised password manager server can silently steal your credentials. Built to demonstrate that the architecture can be redesigned so a compromised server simply can't. Using a fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) wired to [TideCloak](https://docs.tidecloak.com/) for decentralized key management and zero-knowledge, end-to-end per-field encryption.
+An open-source "trustless password manager" proof-of-concept built on the premise that a compromised password manager server should be architecturally incapable of stealing your credentials. [ETH Zurich&#39;s research](https://ethz.ch/en/news-and-events/eth-news/news/2026/02/password-managers-less-secure-than-promised.html)'s recently published research documented 25 vulnerabilities showing how today's servers can do exactly that. Using a fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) wired to [TideCloak](https://docs.tidecloak.com/) for decentralized key management and zero-knowledge, end-to-end per-field encryption.
 
 ---
 
 ## What this PoC demonstrates
 
-Traditional password managers face a choice between offering better security or convenience. Most opt for convenience by acting as a trusted intermediary that manages keys and encryption on the user's behalf, making themselves a blindly trusted cog accompanied by security promises ETH Zurich's research proved are often unfounded.
+Traditional password managers face a choice between offering better security or convenience. Most opt for convenience by acting as a trusted intermediary that manages keys and encryption on the user's behalf, making themselves a blindly trusted cog accompanied by security promises that rarely hold up under scrutiny.
 
 By wiring Vaultwarden to TideCloak, cryptographic keys, used to authenticate users and encrypt data, are generated and operated across a decentralized network, never materializing in full anywhere, and never trusted to any single party. A compromised server cannot expose vault contents or elevate its own privileges, because no one ever holds the keys needed to do either.
 
