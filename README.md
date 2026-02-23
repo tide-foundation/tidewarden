@@ -2,7 +2,7 @@
 
 ![Status](https://img.shields.io/badge/status-proof--of--concept-orange)
 
-An open-source "trustless password manager" proof-of-concept built on the premise that a compromised password manager server should be architecturally incapable of stealing your credentials. [ETH Zurich&#39;s research](https://ethz.ch/en/news-and-events/eth-news/news/2026/02/password-managers-less-secure-than-promised.html)'s recently published research documented 25 vulnerabilities showing how today's servers can do exactly that. Using a fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) wired to [TideCloak](https://docs.tidecloak.com/) for decentralized key management and zero-knowledge, end-to-end per-field encryption.
+An open-source "trustless password manager" proof-of-concept that redesigns password manager server architecture so a compromised server simply cannot steal your credentials, a problem ETH Zurich's [recently published](https://ethz.ch/en/news-and-events/eth-news/news/2026/02/password-managers-less-secure-than-promised.html) research documented 25 ways today's servers are vulnerable to. Using a fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) wired to [TideCloak](https://docs.tidecloak.com/) for decentralized key management and zero-knowledge, end-to-end per-field encryption.
 
 ---
 
