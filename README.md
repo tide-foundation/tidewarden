@@ -3,7 +3,8 @@
 ![Status](https://img.shields.io/badge/status-proof--of--concept-orange)
 
 An open-source proof-of-concept exploring a new password manager architecture. One where users get the convenience of a centralised vault without the catastrophic risk that comes with it.
-Password managers are useful because they centralise credentials. The problem is that centralisation also creates a single point of failure for vendors, channels, and anyone positioned between the user and their data. ETH Zurich's [recently published](https://ethz.ch/en/news-and-events/eth-news/news/2026/02/password-managers-less-secure-than-promised.html) research documented 25 ways the security promises covering that risk break down in practice, and users have no way to verify any of them independently.
+
+Password managers are useful because they centralise credentials. The problem is that centralisation also creates a single point of failure in vendors, channels, and anyone positioned between the user and their data. ETH Zurich's [recently published](https://ethz.ch/en/news-and-events/eth-news/news/2026/02/password-managers-less-secure-than-promised.html) research documented 25 ways the security promises covering that risk break down in practice, and users have no way to verify any of them independently.
 
 The project uses a fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) and [Bitwarden Clients](https://github.com/bitwarden/clients) wired to [TideCloak](https://docs.tidecloak.com/) for decentralized key management and zero-knowledge, end-to-end per-field encryption.
 
