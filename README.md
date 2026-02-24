@@ -2,23 +2,26 @@
 
 ![Status](https://img.shields.io/badge/status-proof--of--concept-orange)
 
-An open-source "trustless password manager" proof-of-concept that redesigns password manager server architecture so a compromised server simply cannot steal your credentials, a problem ETH Zurich's [recently published](https://ethz.ch/en/news-and-events/eth-news/news/2026/02/password-managers-less-secure-than-promised.html) research documented 25 ways today's servers are vulnerable to. Using a fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (server) and [Bitwarden Clients](https://github.com/bitwarden/clients) (web vault & browser extension) wired to [TideCloak](https://docs.tidecloak.com/) for decentralized key management and zero-knowledge, end-to-end per-field encryption.
+An open-source proof-of-concept exploring a new password manager architecture. One where users get the convenience of a centralised vault without the catastrophic risk that comes with it.
+Password managers are useful because they centralise credentials. The problem is that centralisation also creates a single point of failure for vendors, channels, and anyone positioned between the user and their data. ETH Zurich's [recently published](https://ethz.ch/en/news-and-events/eth-news/news/2026/02/password-managers-less-secure-than-promised.html) research documented 25 ways the security promises covering that risk break down in practice, and users have no way to verify any of them independently.
+
+The project uses a fork of [Vaultwarden](https://github.com/dani-garcia/vaultwarden) and [Bitwarden Clients](https://github.com/bitwarden/clients) wired to [TideCloak](https://docs.tidecloak.com/) for decentralized key management and zero-knowledge, end-to-end per-field encryption.
 
 ---
 
 ## What this PoC demonstrates
 
-Traditional password managers face a choice between offering better security or convenience. Most opt for convenience by acting as a trusted intermediary that manages keys and encryption on the user's behalf, making themselves a blindly trusted cog accompanied by security promises that rarely hold up under scrutiny.
+The goal is simple: a user's credentials should only ever be accessible to that user, on a device they successfully authenticated from, with no viable path for a vendor, server operator, or man-in-the-middle to access them, even acting with full malicious intent.
 
-By wiring Vaultwarden to TideCloak, cryptographic keys, used to authenticate users and encrypt data, are generated and operated across a decentralized network, never materializing in full anywhere, and never trusted to any single party. A compromised server cannot expose vault contents or elevate its own privileges, because no one ever holds the keys needed to do either.
+In conventional architectures that guarantee is a promise. Most vendors claim zero-knowledge cryptography, and some may genuinely attempt it. But the trusted role they play in brokering authentication and key operations means a compromised or complicit vendor can quietly step into the user's shoes without ever being detected. Here, keys are generated and operated across a decentralized network and never materialise in complete form on any single machine. No single party, including the platform operator, is ever in a position to broker that privilege unilaterally. The guarantee is structural, not asserted.
 
 **Specifically:**
 
 - **Keys cannot be brute-forced.** Traditional managers derive encryption keys from your master password, making stolen vaults crackable offline. Here, data is locked with 256-bit elliptic curve keys.
-- **There's no key to steal from the server.** Those keys never exist in complete form on any single machine. A server breach yields encrypted data with no path to decryption.
-- **Decryption requires live network consensus.** Even with the entire encrypted database in hand, decryption requires the decentralized network cooperating in real-time with an authenticated session. Exfiltrated data alone gets you nowhere.
+- **A server breach yields nothing usable.** Keys never exist in complete form on any single machine, so encrypted data has no viable path to decryption.
+- **Decryption requires live network consensus.** A full database dump is inert without the decentralized network cooperating in real-time with an authenticated session.
 - **Decryption is scoped to exactly what you're viewing.** Only the specific data in use is decrypted, just-in-time, bound to an ephemeral session key on the authenticated user's device (TPM).
-- **Authentication doesn't rely on brute-force-susceptible passwords.** Login goes through TideCloak's zero-knowledge mechanism rather than a traditional master password.
+- **Authentication without a brute-force surface.** Login goes through TideCloak's zero-knowledge mechanism rather than a traditional master password.
 
 Note: This is a research prototype, not a hardened production deployment.
 
