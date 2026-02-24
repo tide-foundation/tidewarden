@@ -14,7 +14,7 @@ The project uses a fork of [Vaultwarden](https://github.com/dani-garcia/vaultwar
 
 The goal is simple, a user's credentials should only ever be accessible to that user, on a device they successfully authenticated from, with no viable path for a vendor, server operator, or man-in-the-middle to access them, even acting with full malicious intent.
 
-In conventional architectures that guarantee is a promise. Most vendors claim zero-knowledge cryptography, and some may genuinely attempt it. But the trusted role they play in brokering authentication and key operations means a compromised or complicit vendor can quietly step into the user's shoes without ever being detected. Here, keys are generated and operated across a decentralized network and never materialise in complete form on any single machine. No single party, including the platform operator, is ever in a position to broker that privilege unilaterally. The guarantee is structural, not asserted.
+Many vendors promise zero-knowledge cryptography, but the trusted role they play in brokering authentication and key operations means a compromised or complicit vendor can quietly step into the user's shoes without ever being detected. Whereas, here, keys are generated and operated across a decentralized network and never materialise in complete form on any single machine. No single party, including the platform operator, is ever in a position to broker that privilege unilaterally. The guarantee becomes verifiable, not asserted.
 
 **Specifically:**
 
