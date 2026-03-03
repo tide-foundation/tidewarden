@@ -38,7 +38,20 @@
             }
         ],
         "client": {
-            "myclient": []
+            "tidewarden": [
+                {
+                    "name": "admin",
+                    "description": "can see all collections without explicit assignment"
+                },
+                {
+                    "name": "owner",
+                    "description": "Full control over everything"
+                },
+                {
+                    "name": "Manager",
+                    "description": "Standard application user"
+                }
+            ]
         }
     },
     "defaultRole": {
@@ -49,7 +62,7 @@
     },
     "clients": [
         {
-            "clientId": "myclient",
+            "clientId": "tidewarden",
             "enabled": true,
             "redirectUris": [
                 "http://localhost:3000",

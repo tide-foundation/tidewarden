@@ -1212,7 +1212,6 @@ pub async fn refresh_tokens(
     let refresh_claims = match decode_refresh(refresh_token) {
         Err(err) => {
             error!("Failed to decode {} refresh_token: {refresh_token}: {err:?}", ip.ip);
-            //err_silent!(format!("Impossible to read refresh_token: {}", err.message()))
 
             // If the token failed to decode, it was probably one of the old style tokens that was just a Base64 string.
             // We can generate a claim for them for backwards compatibility. Note that the password refresh claims don't
@@ -1248,7 +1247,7 @@ pub async fn refresh_tokens(
             (AuthTokens::new(&device, &user, refresh_claims.sub, client_id), None)
         }
         AuthMethod::Sso if CONFIG.sso_enabled() => {
-            sso::exchange_refresh_token(&device, &user, client_id, refresh_claims).await?
+            sso::exchange_refresh_token(&device, &user, client_id, refresh_claims, conn).await?
         }
         AuthMethod::Sso => err!("SSO is now disabled, Login again using email and master password"),
         AuthMethod::Password if CONFIG.sso_enabled() && CONFIG.sso_only() => err!("SSO is now required, Login again"),

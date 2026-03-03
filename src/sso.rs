@@ -345,8 +345,18 @@ pub async fn redeem(
             user_uuid: user.uuid.clone(),
             identifier: auth_user.identifier.clone(),
             tide_encrypted_key: None,
+            sso_access_token: Some(auth_user.access_token.clone()),
+            sso_refresh_token: auth_user.refresh_token.clone(),
         };
         user_sso.save(conn).await?;
+    } else {
+        // Update SSO tokens for existing user
+        SsoUser::update_sso_tokens(
+            &user.uuid,
+            &auth_user.access_token,
+            auth_user.refresh_token.as_deref(),
+            conn,
+        ).await?;
     }
 
     if !CONFIG.sso_auth_only_not_session() {
@@ -444,6 +454,7 @@ pub async fn exchange_refresh_token(
     user: &User,
     client_id: Option<String>,
     refresh_claims: auth::RefreshJwtClaims,
+    conn: &DbConn,
 ) -> ApiResult<(AuthTokens, Option<String>)> {
     let exp = refresh_claims.exp;
     match refresh_claims.token {
@@ -451,6 +462,10 @@ pub async fn exchange_refresh_token(
             // Use new refresh_token if returned
             let (new_refresh_token, access_token, expires_in, doken) =
                 Client::exchange_refresh_token(refresh_token.clone()).await?;
+
+            // Persist SSO tokens server-side
+            let sso_rt = new_refresh_token.as_deref().or(Some(&refresh_token));
+            drop(SsoUser::update_sso_tokens(&user.uuid, &access_token, sso_rt, conn).await);
 
             let auth_tokens = create_auth_tokens(
                 device,
@@ -471,6 +486,9 @@ pub async fn exchange_refresh_token(
             }
 
             Client::check_validity(access_token.clone()).await?;
+
+            // Persist SSO access token server-side
+            drop(SsoUser::update_sso_tokens(&user.uuid, &access_token, None, conn).await);
 
             let access_claims = auth::LoginJwtClaims::new(
                 device,

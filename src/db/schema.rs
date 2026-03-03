@@ -273,6 +273,8 @@ table! {
         user_uuid -> Text,
         identifier -> Text,
         tide_encrypted_key -> Nullable<Text>,
+        sso_access_token -> Nullable<Text>,
+        sso_refresh_token -> Nullable<Text>,
     }
 }
 
@@ -342,6 +344,102 @@ table! {
     }
 }
 
+table! {
+    policy_templates (uuid) {
+        uuid -> Text,
+        org_uuid -> Text,
+        name -> Text,
+        description -> Text,
+        cs_code -> Text,
+        parameters -> Text,
+        created_by -> Text,
+        created_at -> BigInt,
+        updated_at -> BigInt,
+    }
+}
+
+table! {
+    policy_approvals (uuid) {
+        uuid -> Text,
+        org_uuid -> Text,
+        role_id -> Text,
+        requested_by -> Text,
+        requested_by_email -> Nullable<Text>,
+        threshold -> Integer,
+        approval_count -> Integer,
+        rejection_count -> Integer,
+        commit_ready -> Bool,
+        approved_by -> Text,
+        denied_by -> Text,
+        status -> Text,
+        timestamp -> BigInt,
+        policy_request_data -> Text,
+        contract_code -> Nullable<Text>,
+    }
+}
+
+table! {
+    access_metadata (change_set_id) {
+        change_set_id -> Text,
+        org_uuid -> Text,
+        username -> Text,
+        user_email -> Nullable<Text>,
+        client_id -> Nullable<Text>,
+        role -> Nullable<Text>,
+        timestamp -> BigInt,
+        action_type -> Nullable<Text>,
+        change_set_type -> Nullable<Text>,
+    }
+}
+
+table! {
+    tide_roles (uuid) {
+        uuid -> Text,
+        org_uuid -> Text,
+        name -> Text,
+        description -> Text,
+        client_role -> Bool,
+        role_type -> Text,
+        created_at -> BigInt,
+        updated_at -> BigInt,
+    }
+}
+
+table! {
+    role_policies (uuid) {
+        uuid -> Text,
+        org_uuid -> Text,
+        role_name -> Text,
+        enabled -> Bool,
+        contract_type -> Text,
+        approval_type -> Text,
+        execution_type -> Text,
+        threshold -> Integer,
+        template_id -> Nullable<Text>,
+        template_params -> Text,
+        created_at -> BigInt,
+        updated_at -> BigInt,
+    }
+}
+
+table! {
+    policy_logs (uuid) {
+        uuid -> Text,
+        org_uuid -> Text,
+        policy_id -> Text,
+        role_id -> Text,
+        action -> Text,
+        performed_by -> Text,
+        performed_by_email -> Nullable<Text>,
+        timestamp -> BigInt,
+        policy_status -> Nullable<Text>,
+        policy_threshold -> Nullable<Integer>,
+        approval_count -> Nullable<Integer>,
+        rejection_count -> Nullable<Integer>,
+        details -> Nullable<Text>,
+    }
+}
+
 joinable!(attachments -> ciphers (cipher_uuid));
 joinable!(ciphers -> organizations (organization_uuid));
 joinable!(ciphers -> users (user_uuid));
@@ -371,6 +469,24 @@ joinable!(collections_groups -> groups (groups_uuid));
 joinable!(event -> users_organizations (uuid));
 joinable!(auth_requests -> users (user_uuid));
 joinable!(sso_users -> users (user_uuid));
+table! {
+    tide_user_roles (uuid) {
+        uuid -> Text,
+        org_uuid -> Text,
+        membership_uuid -> Text,
+        role_name -> Text,
+        created_at -> BigInt,
+    }
+}
+
+joinable!(tide_user_roles -> organizations (org_uuid));
+joinable!(tide_user_roles -> users_organizations (membership_uuid));
+joinable!(policy_templates -> organizations (org_uuid));
+joinable!(policy_approvals -> organizations (org_uuid));
+joinable!(access_metadata -> organizations (org_uuid));
+joinable!(tide_roles -> organizations (org_uuid));
+joinable!(role_policies -> organizations (org_uuid));
+joinable!(policy_logs -> organizations (org_uuid));
 
 allow_tables_to_appear_in_same_query!(
     attachments,
@@ -396,4 +512,11 @@ allow_tables_to_appear_in_same_query!(
     collections_groups,
     event,
     auth_requests,
+    policy_templates,
+    policy_approvals,
+    access_metadata,
+    tide_roles,
+    role_policies,
+    policy_logs,
+    tide_user_roles,
 );
