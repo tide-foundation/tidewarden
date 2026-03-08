@@ -8,7 +8,7 @@ use crate::{
     auth::{AdminHeaders, Headers},
     db::{
         models::{
-            AccessMetadata, AccessMetadataId, Collection, CollectionMembershipSig, CollectionUser,
+            AccessMetadata, AccessMetadataId, Collection, CollectionUser,
             Membership, MembershipStatus, MembershipType, OrganizationId, PolicyApproval,
             PolicyApprovalId, PolicyLog, PolicyTemplate, PolicyTemplateId, RolePolicy, User,
         },
@@ -80,10 +80,6 @@ pub fn routes() -> Vec<Route> {
         get_user_collection_access,
         set_user_collection_access,
         remove_user_collection_access,
-        // Collection Membership Signatures
-        list_collection_membership_sigs,
-        get_collection_membership_sig,
-        store_collection_membership_sig,
         // Committed Policies
         get_committed_policy,
         get_crypto_policy,
@@ -1635,8 +1631,6 @@ async fn get_user_collection_access(
 struct CollectionAccessData {
     collection_id: String,
     access_level: String,
-    membership_data: Option<String>,
-    signature: Option<String>,
 }
 
 /// Set collection access for a user. Auto-creates the realm role if needed,
@@ -1710,18 +1704,6 @@ async fn set_user_collection_access(
         }
     }
 
-    // 5. Save the Tide-signed membership data if provided
-    if let (Some(membership_data), Some(signature)) = (data.membership_data, data.signature) {
-        let sig = CollectionMembershipSig::new(
-            data.collection_id.clone(),
-            org_id,
-            membership_data,
-            signature,
-            headers.user.name.clone(),
-        );
-        sig.save(&conn).await?;
-    }
-
     Ok(Json(json!({ "roleName": role_name })))
 }
 
@@ -1729,8 +1711,6 @@ async fn set_user_collection_access(
 #[serde(rename_all = "camelCase")]
 struct RemoveCollectionAccessData {
     collection_id: String,
-    membership_data: Option<String>,
-    signature: Option<String>,
 }
 
 /// Remove collection access for a specific collection from a user (with signed membership)
@@ -1760,18 +1740,6 @@ async fn remove_user_collection_access(
         }
     } else {
         warn!("Could not resolve TideCloak user {user_id} to Vaultwarden user — collection removal not synced to vault");
-    }
-
-    // Save the updated signed membership data if provided
-    if let (Some(membership_data), Some(signature)) = (data.membership_data, data.signature) {
-        let sig = CollectionMembershipSig::new(
-            data.collection_id,
-            org_id,
-            membership_data,
-            signature,
-            headers.user.name.clone(),
-        );
-        sig.save(&conn).await?;
     }
 
     Ok(Json(json!({})))
@@ -2129,6 +2097,20 @@ pub async fn sync_membership_to_tidecloak_with_actor(
                     Err(e) => error!("[Tide] sync step 6/7 FAILED — add orgOwner composite: {e}"),
                 }
 
+                // Add org:{orgId}:accessAll as composite child of org:{orgId}:owner
+                {
+                    let access_all_name = format!("org:{org_id}:accessAll");
+                    match ensure_client_role(&base_url, &realm, &token, &client_uuid, &access_all_name).await {
+                        Ok(access_all_role) => {
+                            match add_composite_role(&base_url, &realm, &token, owner_role_id, &access_all_role).await {
+                                Ok(()) => info!("[Tide] sync — added {access_all_name} composite to {owner_role_name}"),
+                                Err(e) => error!("[Tide] sync — failed to add {access_all_name} composite: {e}"),
+                            }
+                        }
+                        Err(e) => error!("[Tide] sync — failed to ensure {access_all_name} role: {e}"),
+                    }
+                }
+
                 // Only add admin composites when orgOwner was just created
                 if !org_owner_existed {
                     let org_owner_id = org_owner_role.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -2224,90 +2206,6 @@ pub async fn sync_membership_to_tidecloak_with_actor(
 
     info!("[Tide] Synced org membership to TideCloak: user={tc_user_id}, org={org_id}, roles={:?}", role_names);
     Ok(())
-}
-
-// ---------- Collection Membership Signature Endpoints ----------
-
-/// List all Tide-signed membership records for an organization (with collection names)
-#[get("/organizations/<org_id>/tide/collection-membership-sigs")]
-async fn list_collection_membership_sigs(
-    org_id: OrganizationId,
-    headers: AdminHeaders,
-    conn: DbConn,
-) -> JsonResult {
-    if org_id != headers.org_id {
-        err!("Organization not found", "Organization id's do not match");
-    }
-    let sigs = CollectionMembershipSig::find_by_org(&org_id, &conn).await;
-    let collections = Collection::find_by_organization(&org_id, &conn).await;
-
-    let json: Vec<Value> = sigs
-        .iter()
-        .map(|s| {
-            let col_name = collections
-                .iter()
-                .find(|c| c.uuid.to_string() == s.collection_id)
-                .map(|c| c.name.as_str())
-                .unwrap_or("Unknown Collection");
-            json!({
-                "collectionId": s.collection_id,
-                "collectionName": col_name,
-                "membershipData": s.membership_data,
-                "signature": s.signature,
-                "signedBy": s.signed_by,
-                "updatedAt": s.updated_at,
-            })
-        })
-        .collect();
-    Ok(Json(json!(json)))
-}
-
-/// Get the Tide-signed membership data for a collection
-#[get("/organizations/<org_id>/tide/collection-membership-sig/<collection_id>")]
-async fn get_collection_membership_sig(
-    org_id: OrganizationId,
-    collection_id: String,
-    headers: AdminHeaders,
-    conn: DbConn,
-) -> JsonResult {
-    if org_id != headers.org_id {
-        err!("Organization not found", "Organization id's do not match");
-    }
-    match CollectionMembershipSig::find_by_collection(&collection_id, &conn).await {
-        Some(sig) => Ok(Json(sig.to_json())),
-        None => Ok(Json(json!(null))),
-    }
-}
-
-/// Store a Tide-signed collection membership proof
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StoreMembershipSigData {
-    collection_id: String,
-    membership_data: String,
-    signature: String,
-}
-
-#[post("/organizations/<org_id>/tide/collection-membership-sig", data = "<data>")]
-async fn store_collection_membership_sig(
-    org_id: OrganizationId,
-    data: Json<StoreMembershipSigData>,
-    headers: AdminHeaders,
-    conn: DbConn,
-) -> JsonResult {
-    if org_id != headers.org_id {
-        err!("Organization not found", "Organization id's do not match");
-    }
-    let data = data.into_inner();
-    let sig = CollectionMembershipSig::new(
-        data.collection_id.clone(),
-        org_id,
-        data.membership_data,
-        data.signature,
-        headers.user.name.clone(),
-    );
-    sig.save(&conn).await?;
-    Ok(Json(sig.to_json()))
 }
 
 // ---------- Committed Policy Endpoints ----------
@@ -2578,8 +2476,8 @@ async fn list_change_requests_clients(
 }
 
 /// Inject policyRoleId and dynamicData from the org's committed PolicyApproval into the request body.
-/// Queries TideCloak for the affected user's previous UC + sig and includes them in dynamicData.
-/// dynamicData is an ordered array — TideCloak assembles elements positionally into TideMemory.
+/// TideCloak's MultiAdmin signer reads dynamicData from the JSON and injects it into the
+/// BaseTideRequest bytes as raw [len][data] pairs (no version header).
 async fn inject_policy_data(body: &mut Value, org_id: &OrganizationId, approval: &PolicyApproval, base_url: &str, realm: &str, token: &str) {
     if let Value::Object(map) = body {
         // Resolve role name to TideCloak UUID if needed
@@ -2608,24 +2506,303 @@ async fn inject_policy_data(body: &mut Value, org_id: &OrganizationId, approval:
         let mut prev_uc = String::new();
         let mut prev_uc_sig = String::new();
         if let Some(change_set_id) = map.get("changeSetId").and_then(|v| v.as_str()) {
+            // Attempt 1: Use the change-set-specific user-context endpoint
             let uc_url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/{change_set_id}/user-context");
+            info!("[Tide] inject_policy_data: fetching UC from {uc_url}");
             if let Ok(resp) = tidecloak_request(reqwest::Method::GET, &uc_url, token, None).await {
-                if resp.status().is_success() {
+                let status = resp.status();
+                if status.is_success() {
                     if let Ok(uc_body) = resp.json::<Value>().await {
                         prev_uc = uc_body.get("accessProof").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         prev_uc_sig = uc_body.get("accessProofSig").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        info!("[Tide] inject_policy_data: UC response for change-set {change_set_id}: accessProof={} chars, accessProofSig={} chars",
+                            prev_uc.len(), prev_uc_sig.len());
+                        if !prev_uc.is_empty() {
+                            let preview: String = prev_uc.chars().take(100).collect();
+                            info!("[Tide] inject_policy_data: accessProof preview: {preview}...");
+                        }
+                    }
+                } else {
+                    warn!("[Tide] inject_policy_data: UC fetch returned status {status} for change-set {change_set_id}");
+                }
+            }
+
+            // Attempt 2: If UC is empty, find the user from the pending change sets list
+            // and try the direct user-context endpoint
+            if prev_uc.is_empty() {
+                warn!("[Tide] inject_policy_data: accessProof is EMPTY via change-set endpoint, trying fallback...");
+
+                // Get the client UUID for the tidewarden client
+                if let Ok(_client_uuid) = get_tidecloak_client_uuid(base_url, realm, token).await {
+                    // Fetch pending user change sets to find the userId
+                    let list_url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/users/requests");
+                    if let Ok(resp) = tidecloak_request(reqwest::Method::GET, &list_url, token, None).await {
+                        if resp.status().is_success() {
+                            if let Ok(changes) = resp.json::<Vec<Value>>().await {
+                                // Find the change set matching our changeSetId
+                                for change in &changes {
+                                    let cs_id = change.get("changeSetId").and_then(|v| v.as_str()).unwrap_or("");
+                                    if cs_id == change_set_id {
+                                        // Found the matching change set — extract user info from userRecord
+                                        if let Some(records) = change.get("userRecord").and_then(|v| v.as_array()) {
+                                            if let Some(record) = records.first() {
+                                                let username = record.get("username").and_then(|v| v.as_str()).unwrap_or("");
+                                                let record_client_id = record.get("clientId").and_then(|v| v.as_str()).unwrap_or("");
+                                                info!("[Tide] inject_policy_data: found user '{}' (client '{}') for change-set {change_set_id}",
+                                                    username, record_client_id);
+
+                                                // Look up the TC user ID by username
+                                                let users_url = format!("{base_url}/admin/realms/{realm}/users?username={}&exact=true",
+                                                    percent_encoding::utf8_percent_encode(username, KC_PATH_SET));
+                                                if let Ok(resp) = tidecloak_request(reqwest::Method::GET, &users_url, token, None).await {
+                                                    if resp.status().is_success() {
+                                                        if let Ok(users) = resp.json::<Vec<Value>>().await {
+                                                            if let Some(tc_user) = users.first() {
+                                                                let tc_user_id = tc_user.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                                                if !tc_user_id.is_empty() && !record_client_id.is_empty() {
+                                                                    // Try direct user-context endpoint
+                                                                    let direct_url = format!("{base_url}/admin/realms/{realm}/tide-admin/user-context/{tc_user_id}/{record_client_id}");
+                                                                    info!("[Tide] inject_policy_data: trying direct UC fetch: {direct_url}");
+                                                                    if let Ok(resp) = tidecloak_request(reqwest::Method::GET, &direct_url, token, None).await {
+                                                                        if resp.status().is_success() {
+                                                                            if let Ok(uc_body) = resp.json::<Value>().await {
+                                                                                prev_uc = uc_body.get("accessProof").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                                                prev_uc_sig = uc_body.get("accessProofSig").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                                                info!("[Tide] inject_policy_data: direct UC: accessProof={} chars, sig={} chars",
+                                                                                    prev_uc.len(), prev_uc_sig.len());
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                                if prev_uc.is_empty() {
+                                    warn!("[Tide] inject_policy_data: could not find change-set {change_set_id} in pending list or user has no committed UC");
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // dynamicData: [executorRole, previousUC, previousUCSig]
-        map.insert("dynamicData".to_string(), json!([owner_role, prev_uc, prev_uc_sig]));
+        // Fetch VVK public key
+        let authority = crate::CONFIG.sso_authority();
+        let vvk_url = format!("{authority}/tide-policy-resources/vvk-public");
+        let mut vvk_pub = String::new();
+        if let Ok(resp) = reqwest::Client::new().get(&vvk_url).send().await {
+            if resp.status().is_success() {
+                if let Ok(vvk_body) = resp.json::<Value>().await {
+                    // Try common field names
+                    vvk_pub = vvk_body.get("public").and_then(|v| v.as_str())
+                        .or_else(|| vvk_body.get("publicKey").and_then(|v| v.as_str()))
+                        .or_else(|| vvk_body.get("key").and_then(|v| v.as_str()))
+                        .or_else(|| vvk_body.as_str())
+                        .unwrap_or("").to_string();
+                    info!("[Tide] inject_policy_data: VVK public key: {} chars", vvk_pub.len());
+                }
+            }
+        }
+
+        // dynamicData: [executorRole, previousUC, previousUCSig, vvkPubKey]
+        // TideCloak's MultiAdmin converts each string to UTF-8 bytes via .getBytes(UTF_8)
+        map.insert("dynamicData".to_string(), json!([owner_role, prev_uc, prev_uc_sig, vvk_pub]));
+        info!("[Tide] inject_policy_data: dynamicData elements: role={}, uc={} chars, sig={} chars, vvk={} chars",
+            owner_role.len(), prev_uc.len(), prev_uc_sig.len(), vvk_pub.len());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TideMemory binary helpers
+// ---------------------------------------------------------------------------
+// TideMemory format: [4-byte LE version(1)] then N fields each [4-byte LE length][data]
+
+/// Parse a TideMemory blob into its constituent fields (skips the 4-byte version header).
+fn tide_memory_parse(data: &[u8]) -> Vec<Vec<u8>> {
+    let mut fields = Vec::new();
+    if data.len() < 4 {
+        return fields;
+    }
+    let mut offset = 4; // skip version header
+    while offset + 4 <= data.len() {
+        let len = i32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+        offset += 4;
+        if len < 0 {
+            break;
+        }
+        let len = len as usize;
+        if offset + len > data.len() {
+            break;
+        }
+        fields.push(data[offset..offset + len].to_vec());
+        offset += len;
+    }
+    fields
+}
+
+/// Build a TideMemory blob from fields. Writes version 1 header then each field with length prefix.
+fn tide_memory_build(fields: &[&[u8]]) -> Vec<u8> {
+    let total: usize = 4 + fields.iter().map(|f| 4 + f.len()).sum::<usize>();
+    let mut buf = Vec::with_capacity(total);
+    buf.extend_from_slice(&1i32.to_le_bytes()); // version = 1
+    for field in fields {
+        buf.extend_from_slice(&(field.len() as i32).to_le_bytes());
+        buf.extend_from_slice(field);
+    }
+    buf
+}
+
+/// Build raw [4-byte LE length][data] pairs WITHOUT a TideMemory version header.
+/// This matches how TideCloak's MultiAdmin signer builds dynamic data.
+fn tide_raw_fields_build(fields: &[&[u8]]) -> Vec<u8> {
+    let total: usize = fields.iter().map(|f| 4 + f.len()).sum::<usize>();
+    let mut buf = Vec::with_capacity(total);
+    for field in fields {
+        buf.extend_from_slice(&(field.len() as i32).to_le_bytes());
+        buf.extend_from_slice(field);
+    }
+    buf
+}
+
+/// Post-process sign response: inject dynamic data into the changeSetDraftRequests bytes
+/// (field 5 of the BaseTideRequest TideMemory).
+///
+/// TideCloak's MultiAdmin already injects dynamic data from the JSON request, but it only
+/// has what we sent it. This function ensures the bytes match, and logs what's actually in them.
+/// The inner dynamic data uses raw [len][data] pairs (NO version header), matching MultiAdmin's format.
+async fn inject_dynamic_data_into_sign_response(
+    response_body: &mut Value,
+    org_id: &OrganizationId,
+    change_set_id: &str,
+    base_url: &str,
+    realm: &str,
+    token: &str,
+) {
+    // Fetch previous UserContext + VVK signature for the affected user
+    let mut prev_uc = String::new();
+    let mut prev_uc_sig = String::new();
+    if !change_set_id.is_empty() {
+        let uc_url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/{change_set_id}/user-context");
+        if let Ok(resp) = tidecloak_request(reqwest::Method::GET, &uc_url, token, None).await {
+            if resp.status().is_success() {
+                if let Ok(uc_body) = resp.json::<Value>().await {
+                    prev_uc = uc_body.get("accessProof").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    prev_uc_sig = uc_body.get("accessProofSig").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                }
+            }
+        }
+    }
+
+    // Fetch VVK public key
+    let authority = crate::CONFIG.sso_authority();
+    let vvk_url = format!("{authority}/tide-policy-resources/vvk-public");
+    let mut vvk_pub = String::new();
+    if let Ok(resp) = reqwest::Client::new().get(&vvk_url).send().await {
+        if resp.status().is_success() {
+            if let Ok(vvk_body) = resp.json::<Value>().await {
+                vvk_pub = vvk_body.get("public").and_then(|v| v.as_str())
+                    .or_else(|| vvk_body.get("publicKey").and_then(|v| v.as_str()))
+                    .or_else(|| vvk_body.get("key").and_then(|v| v.as_str()))
+                    .or_else(|| vvk_body.as_str())
+                    .unwrap_or("").to_string();
+            }
+        }
+    }
+
+    let owner_role = format!("org:{}:owner", org_id.as_ref());
+
+    // Build inner dynamic data as raw [len][data] pairs (NO version header)
+    // This matches TideCloak MultiAdmin's format.
+    // The contract's TryReadField reads with startOffset=0 (no version skip).
+    let dynamic_data = tide_raw_fields_build(&[
+        owner_role.as_bytes(),
+        prev_uc.as_bytes(),
+        prev_uc_sig.as_bytes(),
+        vvk_pub.as_bytes(),
+    ]);
+
+    info!("[Tide] inject_dynamic: built dynamic data: {} bytes (role={}, uc={} chars, sig={} chars, vvk={} chars)",
+        dynamic_data.len(), owner_role.len(), prev_uc.len(), prev_uc_sig.len(), vvk_pub.len());
+
+    // Process each item in the response and inject dynamic data into changeSetDraftRequests
+    let items: Vec<&mut Value> = match response_body {
+        Value::Array(arr) => arr.iter_mut().collect(),
+        Value::Object(_) => vec![response_body],
+        _ => return,
+    };
+
+    for item in items {
+        let draft_b64 = match item.get("changeSetDraftRequests").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+
+        // Decode the base64 BaseTideRequest bytes
+        let request_bytes = match data_encoding::BASE64.decode(draft_b64.as_bytes()) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("[Tide] inject_dynamic: failed to decode changeSetDraftRequests base64: {e}");
+                continue;
+            }
+        };
+
+        // Parse the outer TideMemory (BaseTideRequest has 10 fields: 0=name..9=policy)
+        let mut fields = tide_memory_parse(&request_bytes);
+        if fields.len() < 6 {
+            info!("[Tide] inject_dynamic: request has {} fields (need at least 6), skipping", fields.len());
+            continue;
+        }
+
+        // Log what's currently in field 5 (existing dynamic data from TideCloak)
+        let existing_dd = &fields[5];
+        info!("[Tide] inject_dynamic: existing field 5 is {} bytes", existing_dd.len());
+        if !existing_dd.is_empty() {
+            // Try to parse as raw [len][data] pairs to see what TideCloak put there
+            let mut dd_offset = 0;
+            let mut dd_idx = 0;
+            while dd_offset + 4 <= existing_dd.len() {
+                let dd_len = i32::from_le_bytes([
+                    existing_dd[dd_offset], existing_dd[dd_offset+1],
+                    existing_dd[dd_offset+2], existing_dd[dd_offset+3],
+                ]) as usize;
+                dd_offset += 4;
+                if dd_offset + dd_len > existing_dd.len() { break; }
+                let dd_val = &existing_dd[dd_offset..dd_offset + dd_len];
+                let preview = String::from_utf8_lossy(&dd_val[..dd_val.len().min(100)]);
+                info!("[Tide] inject_dynamic: existing dd[{dd_idx}] = {} bytes: {preview}", dd_len);
+                dd_offset += dd_len;
+                dd_idx += 1;
+            }
+        }
+
+        // Replace field 5 (dyanmicData) with our dynamic data
+        fields[5] = dynamic_data.clone();
+
+        // Rebuild the full BaseTideRequest TideMemory (with version header for the outer structure)
+        let field_refs: Vec<&[u8]> = fields.iter().map(|f| f.as_slice()).collect();
+        let new_request_bytes = tide_memory_build(&field_refs);
+
+        // Re-encode to base64 and update the response
+        let new_b64 = data_encoding::BASE64.encode(&new_request_bytes);
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert("changeSetDraftRequests".to_string(), Value::String(new_b64));
+            info!("[Tide] inject_dynamic: replaced changeSetDraftRequests ({} -> {} bytes)",
+                request_bytes.len(), new_request_bytes.len());
+        }
     }
 }
 
 /// Sign (approve) a change request via TideCloak IGA.
 /// Injects policyRoleId from the org's committed policy before forwarding.
+/// After getting the response, injects dynamic data into the BaseTideRequest bytes
+/// so the Forseti contract can validate executor role and previous UserContext.
 #[post("/organizations/<org_id>/tide/change-requests/sign", data = "<data>")]
 async fn sign_change_request(
     org_id: OrganizationId,
@@ -2641,23 +2818,32 @@ async fn sign_change_request(
     let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
 
     let mut body = data.into_inner();
-    let approval = PolicyApproval::find_committed_by_role("orgOwner", &conn).await;
-    if let Some(approval) = approval {
+    let change_set_id = body.get("changeSetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let has_committed_policy = if let Some(approval) = PolicyApproval::find_committed_by_role("orgOwner", &conn).await {
         info!("[Tide] sign: found committed orgOwner PolicyApproval role_id={}, status={}", approval.role_id, approval.status);
         inject_policy_data(&mut body, &org_id, &approval, &base_url, &realm, &token).await;
-        info!("[Tide] sign: injected policyRoleId={:?}, dynamicData={:?}",
-            body.get("policyRoleId"), body.get("dynamicData"));
+        info!("[Tide] sign: injected policyRoleId={:?}", body.get("policyRoleId"));
+        true
     } else {
         warn!("[Tide] sign: NO committed orgOwner PolicyApproval found — will use default tide-realm-admin policy");
-    }
+        false
+    };
 
     let url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/sign");
     info!("[Tide] sign: forwarding to {url}");
     let resp = tidecloak_request(reqwest::Method::POST, &url, &token, Some(body)).await?;
     let resp = check_tidecloak_response(resp).await?;
 
-    let body: Value = resp.json().await
+    let mut body: Value = resp.json().await
         .map_err(|e| Error::new("Failed to parse sign response", &e.to_string()))?;
+
+    // Inject dynamic data into the BaseTideRequest bytes so the Forseti contract
+    // can read the executor role, previous UserContext, and VVK public key.
+    if has_committed_policy {
+        inject_dynamic_data_into_sign_response(&mut body, &org_id, &change_set_id, &base_url, &realm, &token).await;
+    }
+
     Ok(Json(body))
 }
 

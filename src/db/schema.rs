@@ -488,19 +488,6 @@ joinable!(access_metadata -> organizations (org_uuid));
 joinable!(tide_roles -> organizations (org_uuid));
 joinable!(role_policies -> organizations (org_uuid));
 joinable!(policy_logs -> organizations (org_uuid));
-joinable!(collection_membership_sigs -> organizations (org_uuid));
-
-table! {
-    collection_membership_sigs (collection_id) {
-        collection_id -> Text,
-        org_uuid -> Text,
-        membership_data -> Text,
-        signature -> Text,
-        signed_by -> Text,
-        updated_at -> BigInt,
-    }
-}
-
 allow_tables_to_appear_in_same_query!(
     attachments,
     ciphers,
@@ -532,5 +519,4 @@ allow_tables_to_appear_in_same_query!(
     role_policies,
     policy_logs,
     tide_user_roles,
-    collection_membership_sigs,
 );

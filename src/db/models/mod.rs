@@ -3,7 +3,6 @@ mod attachment;
 mod auth_request;
 mod cipher;
 mod collection;
-mod collection_membership_sig;
 mod device;
 mod emergency_access;
 mod event;
@@ -26,7 +25,6 @@ mod two_factor_incomplete;
 mod user;
 
 pub use self::access_metadata::{AccessMetadata, AccessMetadataId};
-pub use self::collection_membership_sig::CollectionMembershipSig;
 pub use self::attachment::{Attachment, AttachmentId};
 pub use self::auth_request::{AuthRequest, AuthRequestId};
 pub use self::cipher::{Cipher, CipherId, RepromptType};
