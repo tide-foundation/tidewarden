@@ -32,6 +32,7 @@ pub struct PolicyApproval {
     pub timestamp: i64,
     pub policy_request_data: String,
     pub contract_code: Option<String>,
+    pub signed_policy_data: String,
 }
 
 impl PolicyApproval {
@@ -61,6 +62,7 @@ impl PolicyApproval {
             timestamp: now,
             policy_request_data,
             contract_code,
+            signed_policy_data: String::new(),
         }
     }
 
@@ -82,6 +84,7 @@ impl PolicyApproval {
             "timestamp": self.timestamp,
             "policyRequestData": self.policy_request_data,
             "contractCode": self.contract_code,
+            "signedPolicyData": self.signed_policy_data,
         })
     }
 }
@@ -155,11 +158,66 @@ impl PolicyApproval {
         }}
     }
 
+    pub async fn find_committed_by_org(org_uuid: &OrganizationId, conn: &DbConn) -> Option<Self> {
+        db_run! { conn: {
+            policy_approvals::table
+                .filter(policy_approvals::org_uuid.eq(org_uuid))
+                .filter(policy_approvals::status.eq("committed"))
+                .order(policy_approvals::timestamp.desc())
+                .first::<Self>(conn)
+                .ok()
+        }}
+    }
+
+    /// Find a committed policy by role_id across all orgs (realm-wide lookup).
+    pub async fn find_committed_by_role(role_id: &str, conn: &DbConn) -> Option<Self> {
+        db_run! { conn: {
+            policy_approvals::table
+                .filter(policy_approvals::role_id.eq(role_id))
+                .filter(policy_approvals::status.eq("committed"))
+                .order(policy_approvals::timestamp.desc())
+                .first::<Self>(conn)
+                .ok()
+        }}
+    }
+
+    /// Find any committed policy across all orgs (realm-wide lookup).
+    /// Used when the policy is attached to a realm-wide role like orgOwner.
+    pub async fn find_any_committed(conn: &DbConn) -> Option<Self> {
+        db_run! { conn: {
+            policy_approvals::table
+                .filter(policy_approvals::status.eq("committed"))
+                .order(policy_approvals::timestamp.desc())
+                .first::<Self>(conn)
+                .ok()
+        }}
+    }
+
+    /// Find all approvals for a given role_id in a specific org (any status).
+    pub async fn find_by_role_and_org(role_id: &str, org_uuid: &OrganizationId, conn: &DbConn) -> Vec<Self> {
+        db_run! { conn: {
+            policy_approvals::table
+                .filter(policy_approvals::role_id.eq(role_id))
+                .filter(policy_approvals::org_uuid.eq(org_uuid))
+                .order(policy_approvals::timestamp.desc())
+                .load::<Self>(conn)
+                .expect("Error loading policy_approvals")
+        }}
+    }
+
     pub async fn delete_all_by_organization(org_uuid: &OrganizationId, conn: &DbConn) -> EmptyResult {
         db_run! { conn: {
             diesel::delete(policy_approvals::table.filter(policy_approvals::org_uuid.eq(org_uuid)))
                 .execute(conn)
                 .map_res("Error deleting policy_approvals")
+        }}
+    }
+
+    pub async fn delete_all(conn: &DbConn) -> EmptyResult {
+        db_run! { conn: {
+            diesel::delete(policy_approvals::table)
+                .execute(conn)
+                .map_res("Error deleting all policy_approvals")
         }}
     }
 }

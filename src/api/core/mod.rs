@@ -6,7 +6,7 @@ mod folders;
 mod organizations;
 mod public;
 mod sends;
-mod tide;
+pub mod tide;
 pub mod two_factor;
 
 pub use accounts::purge_auth_requests;

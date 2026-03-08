@@ -99,8 +99,8 @@ impl Fairing for AppHeaders {
                     object-src 'self' blob:; \
                     script-src 'self' 'wasm-unsafe-eval'; \
                     style-src 'self' 'unsafe-inline'; \
-                    child-src 'self' blob: https://*.duosecurity.com https://*.duofederal.com https://*.tideprotocol.com https://*.dauth.me; \
-                    frame-src 'self' blob: https://*.duosecurity.com https://*.duofederal.com https://*.tideprotocol.com https://*.dauth.me; \
+                    child-src 'self' blob: https://*.duosecurity.com https://*.duofederal.com https://*.tideprotocol.com https://*.dauth.me http://localhost:1001; \
+                    frame-src 'self' blob: https://*.duosecurity.com https://*.duofederal.com https://*.tideprotocol.com https://*.dauth.me http://localhost:1001; \
                     worker-src 'self' blob: https://*.tideprotocol.com https://*.dauth.me; \
                     frame-ancestors 'self' \
                     chrome-extension://nngceckbapebfimnlniiiahkandclblb \
@@ -110,7 +110,7 @@ impl Fairing for AppHeaders {
                     img-src 'self' data: \
                     https://haveibeenpwned.com \
                     {icon_service_csp}; \
-                    connect-src 'self' \
+                    connect-src 'self' webpack://* \
                     https://api.pwnedpasswords.com \
                     https://api.2fa.directory \
                     https://app.simplelogin.io/api/ \
