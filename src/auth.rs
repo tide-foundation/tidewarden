@@ -110,7 +110,10 @@ pub fn decode_jwt<T: DeserializeOwned>(token: &str, issuer: String) -> Result<T,
         Err(err) => match *err.kind() {
             ErrorKind::InvalidToken => err!("Token is invalid"),
             ErrorKind::InvalidIssuer => err!("Issuer is invalid"),
-            ErrorKind::ExpiredSignature => err!("Token has expired"),
+            ErrorKind::ExpiredSignature => {
+                debug!("Token has expired (expected with SSO-only auth)");
+                err_silent!("Token has expired")
+            }
             _ => err!(format!("Error decoding JWT: {:?}", err)),
         },
     }
@@ -1317,7 +1320,10 @@ pub async fn refresh_tokens(
 
     // Get device by refresh token
     let mut device = match Device::find_by_refresh_token(&refresh_claims.device_token, conn).await {
-        None => err!("Invalid refresh token"),
+        None => {
+            debug!("Refresh token not found in DB (expected with SSO-only auth)");
+            err_silent!("Invalid refresh token")
+        },
         Some(device) => device,
     };
 

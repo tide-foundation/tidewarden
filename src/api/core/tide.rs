@@ -3,6 +3,8 @@ use rocket::Route;
 use serde::Deserialize;
 use serde_json::Value;
 
+use tidecloak_rs::AdminClient;
+
 use crate::{
     api::JsonResult,
     auth::{AdminHeaders, Headers},
@@ -16,22 +18,6 @@ use crate::{
     },
     error::Error,
 };
-
-/// Encoding set for URL path segments — only encodes chars that are truly invalid.
-/// Keycloak rejects "non-normalized" paths where safe chars like `:` and `-` are percent-encoded.
-const KC_PATH_SET: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
-    .add(b' ')
-    .add(b'"')
-    .add(b'#')
-    .add(b'%')
-    .add(b'/')
-    .add(b'<')
-    .add(b'>')
-    .add(b'?')
-    .add(b'[')
-    .add(b']')
-    .add(b'{')
-    .add(b'}');
 
 
 pub fn routes() -> Vec<Route> {
@@ -677,32 +663,22 @@ async fn commit_policy(
     // Store the policy on TideCloak's TideRoleDraftEntity via init-cert
     // Must send both initCert (full signed policy bytes) AND initCertSig (raw VVK signature)
     if !approval.signed_policy_data.is_empty() && !approval.role_id.is_empty() {
-        let (base_url, realm) = tidecloak_config()?;
-        let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
+        let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+        let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
 
         // role_id may be a name (e.g. "orgOwner") or a UUID — resolve to TideCloak UUID
-        let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
         let role_id_for_api = if approval.role_id.contains('-') && approval.role_id.len() > 30 {
-            // Already a UUID
             approval.role_id.clone()
         } else {
-            // It's a role name — look up the UUID from TideCloak
-            let encoded_name = percent_encoding::utf8_percent_encode(&approval.role_id, KC_PATH_SET).to_string();
-            let role_url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles/{encoded_name}");
-            let role_resp = tidecloak_request(reqwest::Method::GET, &role_url, &token, None).await?;
-            if role_resp.status().is_success() {
-                let role: Value = role_resp.json().await.unwrap_or_default();
-                role.get("id").and_then(|v| v.as_str()).unwrap_or(&approval.role_id).to_string()
-            } else {
-                warn!("[Tide] Could not find TideCloak role for name '{}', using as-is", approval.role_id);
-                approval.role_id.clone()
+            match ac.get_client_role(&client_uuid, &approval.role_id).await {
+                Ok(role) => role.get("id").and_then(|v| v.as_str()).unwrap_or(&approval.role_id).to_string(),
+                Err(_) => {
+                    warn!("[Tide] Could not find TideCloak role for name '{}', using as-is", approval.role_id);
+                    approval.role_id.clone()
+                }
             }
         };
 
-        let encoded_role_id = percent_encoding::utf8_percent_encode(&role_id_for_api, KC_PATH_SET).to_string();
-        let url = format!(
-            "{base_url}/admin/realms/{realm}/tide-admin/role-policy/{encoded_role_id}/init-cert"
-        );
         let mut body = json!({ "initCert": approval.signed_policy_data });
         if let Some(ref sig) = signature_base64 {
             body["initCertSig"] = json!(sig);
@@ -710,15 +686,8 @@ async fn commit_policy(
         } else {
             warn!("[Tide] No initCertSig provided for role {} — ORK policy verification may fail", approval.role_id);
         }
-        match tidecloak_request(reqwest::Method::POST, &url, &token, Some(body)).await {
-            Ok(resp) if resp.status().is_success() => {
-                info!("[Tide] Stored policy initCert + initCertSig on TideCloak for role {}", approval.role_id);
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                warn!("[Tide] Failed to store initCert on TideCloak: {status} {body}");
-            }
+        match ac.tide_set_role_init_cert(&role_id_for_api, &body).await {
+            Ok(_) => info!("[Tide] Stored policy initCert + initCertSig on TideCloak for role {}", approval.role_id),
             Err(e) => warn!("[Tide] Failed to store initCert on TideCloak: {e}"),
         }
     }
@@ -880,116 +849,76 @@ async fn get_admin_sso_token(user_uuid: &crate::db::models::UserId, conn: &DbCon
     }
 }
 
-/// Make an authenticated request to TideCloak admin API
-async fn tidecloak_request(
-    method: reqwest::Method,
-    path: &str,
-    token: &str,
-    body: Option<Value>,
-) -> Result<reqwest::Response, Error> {
-    let client = reqwest::Client::new();
-    let mut req = client.request(method, path)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {token}"));
-    if let Some(b) = body {
-        req = req.json(&b);
-    }
-    req.send().await.map_err(|e| Error::new("TideCloak request failed", &e.to_string()))
+/// Build an AdminClient from SSO_AUTHORITY config and a fresh token for the given user.
+async fn build_admin_client(
+    user_uuid: &crate::db::models::UserId,
+    conn: &DbConn,
+) -> Result<AdminClient, Error> {
+    let (base_url, realm) = tidecloak_config()?;
+    let token = get_admin_sso_token(user_uuid, conn).await?;
+    Ok(AdminClient::from_url(&base_url, &realm, &token))
 }
 
-/// Get the internal UUID of the TideCloak client (needed for client-scoped role APIs).
-/// Queries: GET /admin/realms/{realm}/clients?clientId={sso_client_id}
-async fn get_tidecloak_client_uuid(base_url: &str, realm: &str, token: &str) -> Result<String, Error> {
+/// Get the internal UUID of the TideCloak SSO client using AdminClient.
+async fn get_tidecloak_client_uuid_ac(ac: &AdminClient) -> Result<String, Error> {
     let client_id = crate::CONFIG.sso_client_id();
-    let url = format!("{base_url}/admin/realms/{realm}/clients?clientId={client_id}");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-    let clients: Vec<Value> = resp.json().await
-        .map_err(|e| Error::new("Failed to parse clients response", &e.to_string()))?;
-    match clients.first().and_then(|c| c.get("id")).and_then(|v| v.as_str()) {
-        Some(uuid) => Ok(uuid.to_string()),
-        None => err!(format!("TideCloak client '{client_id}' not found")),
+    ac.find_client_uuid(&client_id).await
+        .map_err(|e| Error::new("TideCloak client lookup failed", &e.to_string()))
+}
+
+/// Ensure a client role exists, creating it if needed. Returns the full role object.
+async fn ensure_client_role_ac(
+    ac: &AdminClient,
+    client_uuid: &str,
+    role_name: &str,
+) -> Result<Value, Error> {
+    // Try to get the existing role
+    match ac.get_client_role(client_uuid, role_name).await {
+        Ok(role) => return Ok(role),
+        Err(_) => {} // Role doesn't exist — create it
     }
+
+    // Create the role
+    ac.create_client_role(client_uuid, &json!({ "name": role_name }))
+        .await
+        .map_err(|e| Error::new("Failed to create client role", &e.to_string()))?;
+
+    // Fetch the newly created role to get its full object (with id)
+    ac.get_client_role(client_uuid, role_name)
+        .await
+        .map_err(|e| Error::new("Failed to fetch created role", &e.to_string()))
 }
 
-/// Look up a TideCloak client's internal UUID by its human-readable clientId.
-async fn get_client_uuid_by_client_id(base_url: &str, realm: &str, token: &str, client_id: &str) -> Result<String, Error> {
-    let encoded = percent_encoding::utf8_percent_encode(client_id, &percent_encoding::NON_ALPHANUMERIC);
-    let url = format!("{base_url}/admin/realms/{realm}/clients?clientId={encoded}");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-    let clients: Vec<Value> = resp.json().await
-        .map_err(|e| Error::new("Failed to parse clients response", &e.to_string()))?;
-    match clients.first().and_then(|c| c.get("id")).and_then(|v| v.as_str()) {
-        Some(uuid) => Ok(uuid.to_string()),
-        None => err!(format!("TideCloak client '{client_id}' not found")),
-    }
-}
-
-/// Add a composite (child) role to a parent role.
-/// The parent role is identified by its UUID (from the role object's "id" field).
-/// The child role object must contain at least { "id", "name" }.
-async fn add_composite_role(
-    base_url: &str,
-    realm: &str,
-    token: &str,
-    parent_role_id: &str,
-    child_role: &Value,
-) -> Result<(), Error> {
-    let url = format!("{base_url}/admin/realms/{realm}/roles-by-id/{parent_role_id}/composites");
-    let resp = tidecloak_request(reqwest::Method::POST, &url, token, Some(json!([child_role]))).await?;
-    check_tidecloak_response(resp).await?;
-    Ok(())
-}
-
-/// Add `manage-users` from the `realm-management` client as a composite child of the given parent role.
-/// This grants org owners the minimum admin permission needed for change-set operations.
 /// Add a realm-management role as a composite child of the given parent role.
-async fn add_realm_management_composite(
-    base_url: &str,
-    realm: &str,
-    token: &str,
+async fn add_realm_management_composite_ac(
+    ac: &AdminClient,
     parent_role_id: &str,
     role_name: &str,
 ) -> Result<(), Error> {
-    let rm_client_uuid = get_client_uuid_by_client_id(base_url, realm, token, "realm-management").await?;
+    let rm_client_uuid = ac.find_client_uuid("realm-management")
+        .await
+        .map_err(|e| Error::new("Failed to find realm-management client", &e.to_string()))?;
 
-    let encoded = percent_encoding::utf8_percent_encode(role_name, KC_PATH_SET);
-    let url = format!("{base_url}/admin/realms/{realm}/clients/{rm_client_uuid}/roles/{encoded}");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-    let role: Value = resp.json().await
-        .map_err(|e| Error::new(&format!("Failed to parse {role_name} role"), &e.to_string()))?;
+    let role = ac.get_client_role(&rm_client_uuid, role_name)
+        .await
+        .map_err(|e| Error::new(&format!("Failed to get {role_name} role"), &e.to_string()))?;
 
-    add_composite_role(base_url, realm, token, parent_role_id, &role).await
+    ac.add_composite_roles(parent_role_id, &json!([role]))
+        .await
+        .map_err(|e| Error::new(&format!("Failed to add {role_name} composite"), &e.to_string()))?;
+    Ok(())
 }
 
 /// Add all required realm-management roles as composites of the owner role.
-/// These give org owners the minimal admin access needed to manage their org members.
-async fn add_admin_composites(
-    base_url: &str,
-    realm: &str,
-    token: &str,
-    owner_role_id: &str,
-) -> Result<(), Error> {
+async fn add_admin_composites_ac(ac: &AdminClient, owner_role_id: &str) -> Result<(), Error> {
     let roles = ["query-clients", "view-clients", "manage-clients", "query-users", "manage-users"];
     for role_name in &roles {
-        match add_realm_management_composite(base_url, realm, token, owner_role_id, role_name).await {
+        match add_realm_management_composite_ac(ac, owner_role_id, role_name).await {
             Ok(()) => info!("[Tide] Added {role_name} composite to owner role"),
             Err(e) => warn!("[Tide] Failed to add {role_name} composite: {e}"),
         }
     }
     Ok(())
-}
-
-/// Parse TideCloak error response
-async fn check_tidecloak_response(resp: reqwest::Response) -> Result<reqwest::Response, Error> {
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        err!(format!("TideCloak API error: {status} {body}"));
-    }
-    Ok(resp)
 }
 
 // ---------- Role Endpoints (proxy to TideCloak) ----------
@@ -999,13 +928,10 @@ async fn list_roles(org_id: OrganizationId, headers: AdminHeaders, conn: DbConn)
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
-    let url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, &token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-    let roles: Value = resp.json().await.map_err(|e| Error::new("Failed to parse roles", &e.to_string()))?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
+    let roles = ac.get_client_roles(&client_uuid).await
+        .map_err(|e| Error::new("Failed to list roles", &e.to_string()))?;
     Ok(Json(roles))
 }
 
@@ -1019,12 +945,10 @@ async fn create_role(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
-    let url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles");
-    let resp = tidecloak_request(reqwest::Method::POST, &url, &token, Some(data.into_inner())).await?;
-    check_tidecloak_response(resp).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
+    ac.create_client_role(&client_uuid, &data.into_inner()).await
+        .map_err(|e| Error::new("Failed to create role", &e.to_string()))?;
     Ok(Json(json!({})))
 }
 
@@ -1039,13 +963,29 @@ async fn update_role(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
-    let encoded = percent_encoding::utf8_percent_encode(&role_name, KC_PATH_SET);
-    let url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles/{encoded}");
-    let resp = tidecloak_request(reqwest::Method::PUT, &url, &token, Some(data.into_inner())).await?;
-    check_tidecloak_response(resp).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
+    // PUT to update requires the full URL; AdminClient doesn't have update_client_role yet,
+    // so we use the existing role name as path
+    let mut role_data = data.into_inner();
+    if role_data.get("name").is_none() {
+        role_data["name"] = json!(role_name);
+    }
+    // Delete + recreate is not ideal; AdminClient needs a PUT for client roles.
+    // For now, use the raw put via base_url construction.
+    let url = format!("{}/admin/realms/{}/clients/{}/roles/{}",
+        ac.base_url(), ac.realm(), client_uuid, role_name);
+    let http = reqwest::Client::new();
+    let resp = http.put(&url)
+        .bearer_auth(&get_admin_sso_token(&headers.user.uuid, &conn).await?)
+        .json(&role_data)
+        .send().await
+        .map_err(|e| Error::new("Failed to update role", &e.to_string()))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        err!(format!("TideCloak API error: {status} {body}"));
+    }
     Ok(Json(json!({})))
 }
 
@@ -1059,13 +999,10 @@ async fn delete_role(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
-    let encoded = percent_encoding::utf8_percent_encode(&role_name, KC_PATH_SET);
-    let url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles/{encoded}");
-    let resp = tidecloak_request(reqwest::Method::DELETE, &url, &token, None).await?;
-    check_tidecloak_response(resp).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
+    ac.delete_client_role(&client_uuid, &role_name).await
+        .map_err(|e| Error::new("Failed to delete role", &e.to_string()))?;
     Ok(Json(json!({})))
 }
 
@@ -1242,15 +1179,11 @@ async fn list_tide_users(org_id: OrganizationId, headers: AdminHeaders, conn: Db
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
 
-    // Fetch all realm users
-    let url = format!("{base_url}/admin/realms/{realm}/users");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, &token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-    let users: Value = resp.json().await.map_err(|e| Error::new("Failed to parse users", &e.to_string()))?;
+    let users = ac.get_users().await
+        .map_err(|e| Error::new("Failed to list users", &e.to_string()))?;
 
     let org_prefix = format!("org:{org_id}:");
 
@@ -1259,21 +1192,13 @@ async fn list_tide_users(org_id: OrganizationId, headers: AdminHeaders, conn: Db
     if let Some(arr) = users.as_array() {
         for tc_user in arr {
             if let Some(tc_id) = tc_user.get("id").and_then(|v| v.as_str()) {
-                // Get this user's client role mappings
-                let roles_url = format!("{base_url}/admin/realms/{realm}/users/{tc_id}/role-mappings/clients/{client_uuid}");
-                let roles_resp = tidecloak_request(reqwest::Method::GET, &roles_url, &token, None).await;
-                let has_org_role = match roles_resp {
-                    Ok(r) if r.status().is_success() => {
-                        match r.json::<Value>().await {
-                            Ok(roles) => roles.as_array().map_or(false, |arr| {
-                                arr.iter().any(|role| {
-                                    role.get("name").and_then(|n| n.as_str()).map_or(false, |name| name.starts_with(&org_prefix))
-                                })
-                            }),
-                            Err(_) => false,
-                        }
-                    }
-                    _ => false,
+                let has_org_role = match ac.get_user_client_roles(tc_id, &client_uuid).await {
+                    Ok(roles) => roles.as_array().map_or(false, |arr| {
+                        arr.iter().any(|role| {
+                            role.get("name").and_then(|n| n.as_str()).map_or(false, |name| name.starts_with(&org_prefix))
+                        })
+                    }),
+                    Err(_) => false,
                 };
 
                 if has_org_role {
@@ -1296,52 +1221,41 @@ async fn create_tide_user(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
 
-    // Create the user in TideCloak
-    let url = format!("{base_url}/admin/realms/{realm}/users");
     let user_data = data.into_inner();
-    let resp = tidecloak_request(reqwest::Method::POST, &url, &token, Some(user_data.clone())).await?;
-    check_tidecloak_response(resp).await?;
+    ac.create_user(&user_data).await
+        .map_err(|e| Error::new("Failed to create user", &e.to_string()))?;
 
     // Look up the newly created TC user by email and assign org role directly
     if let Some(email) = user_data.get("email").and_then(|e| e.as_str()) {
-        let search_url = format!("{base_url}/admin/realms/{realm}/users?email={email}&exact=true");
-        if let Ok(resp) = tidecloak_request(reqwest::Method::GET, &search_url, &token, None).await {
-            if let Ok(users) = resp.json::<Vec<Value>>().await {
-                if let Some(tc_user) = users.first() {
-                    if let Some(tc_id) = tc_user.get("id").and_then(|v| v.as_str()) {
-                        // Assign org:{orgId}:user role directly
-                        let role_name = format!("org:{org_id}:user");
-                        match ensure_client_role(&base_url, &realm, &token, &client_uuid, &role_name).await {
-                            Ok(role_obj) => {
-                                let assign_url = format!("{base_url}/admin/realms/{realm}/users/{tc_id}/role-mappings/clients/{client_uuid}");
-                                match tidecloak_request(reqwest::Method::POST, &assign_url, &token, Some(json!([role_obj]))).await {
-                                    Ok(r) if r.status().is_success() => {
-                                        info!("[Tide] Assigned {role_name} to new user {tc_id}");
-                                    }
-                                    Ok(r) => warn!("[Tide] Failed to assign {role_name} to {tc_id}: {}", r.status()),
-                                    Err(e) => warn!("[Tide] Failed to assign {role_name} to {tc_id}: {e}"),
-                                }
+        if let Ok(users) = ac.search_users_by_email(email).await {
+            if let Some(tc_user) = users.first() {
+                if let Some(tc_id) = tc_user.get("id").and_then(|v| v.as_str()) {
+                    let role_name = format!("org:{org_id}:user");
+                    match ensure_client_role_ac(&ac, &client_uuid, &role_name).await {
+                        Ok(role_obj) => {
+                            match ac.assign_user_client_roles(tc_id, &client_uuid, &json!([role_obj])).await {
+                                Ok(_) => info!("[Tide] Assigned {role_name} to new user {tc_id}"),
+                                Err(e) => warn!("[Tide] Failed to assign {role_name} to {tc_id}: {e}"),
                             }
-                            Err(e) => warn!("[Tide] Failed to ensure role {role_name}: {e}"),
                         }
+                        Err(e) => warn!("[Tide] Failed to ensure role {role_name}: {e}"),
+                    }
 
-                        // Also create VW user + org membership
-                        match resolve_vaultwarden_user(&base_url, &realm, &token, tc_id, &conn).await {
-                            Ok(vw_user) => {
-                                if Membership::find_by_user_and_org(&vw_user.uuid, &org_id, &conn).await.is_none() {
-                                    let mut member = Membership::new(vw_user.uuid.clone(), org_id.clone(), None);
-                                    member.status = MembershipStatus::Accepted as i32;
-                                    member.atype = MembershipType::User as i32;
-                                    drop(member.save(&conn).await);
-                                    info!("[Tide] Auto-added new user {} to org {org_id} (needs confirm for org key)", vw_user.email);
-                                }
+                    // Also create VW user + org membership
+                    match resolve_vaultwarden_user_ac(&ac, tc_id, &conn).await {
+                        Ok(vw_user) => {
+                            if Membership::find_by_user_and_org(&vw_user.uuid, &org_id, &conn).await.is_none() {
+                                let mut member = Membership::new(vw_user.uuid.clone(), org_id.clone(), None);
+                                member.status = MembershipStatus::Accepted as i32;
+                                member.atype = MembershipType::User as i32;
+                                drop(member.save(&conn).await);
+                                info!("[Tide] Auto-added new user {} to org {org_id} (needs confirm for org key)", vw_user.email);
                             }
-                            Err(e) => warn!("[Tide] Could not auto-create VW user for new TC user: {e}"),
                         }
+                        Err(e) => warn!("[Tide] Could not auto-create VW user for new TC user: {e}"),
                     }
                 }
             }
@@ -1362,11 +1276,9 @@ async fn update_tide_user(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let url = format!("{base_url}/admin/realms/{realm}/users/{user_id}");
-    let resp = tidecloak_request(reqwest::Method::PUT, &url, &token, Some(data.into_inner())).await?;
-    check_tidecloak_response(resp).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    ac.update_user(&user_id, &data.into_inner()).await
+        .map_err(|e| Error::new("Failed to update user", &e.to_string()))?;
     Ok(Json(json!({})))
 }
 
@@ -1380,11 +1292,9 @@ async fn delete_tide_user(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let url = format!("{base_url}/admin/realms/{realm}/users/{user_id}");
-    let resp = tidecloak_request(reqwest::Method::DELETE, &url, &token, None).await?;
-    check_tidecloak_response(resp).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    ac.delete_user(&user_id).await
+        .map_err(|e| Error::new("Failed to delete user", &e.to_string()))?;
     Ok(Json(json!({})))
 }
 
@@ -1399,12 +1309,9 @@ async fn add_tide_user_roles(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
 
-    // The UI sends { roles: ["roleName", ...] } but TideCloak expects [{ id, name }, ...]
-    // Resolve role names to full client role objects
     let input: Value = data.into_inner();
     let role_names: Vec<String> = match input.get("roles") {
         Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
@@ -1413,18 +1320,13 @@ async fn add_tide_user_roles(
 
     let mut role_objects = Vec::new();
     for name in &role_names {
-        let encoded = percent_encoding::utf8_percent_encode(name, KC_PATH_SET);
-        let role_url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles/{encoded}");
-        let resp = tidecloak_request(reqwest::Method::GET, &role_url, &token, None).await?;
-        if resp.status().is_success() {
-            let role: Value = resp.json().await.unwrap_or_default();
+        if let Ok(role) = ac.get_client_role(&client_uuid, name).await {
             role_objects.push(role);
         }
     }
 
-    let url = format!("{base_url}/admin/realms/{realm}/users/{user_id}/role-mappings/clients/{client_uuid}");
-    let resp = tidecloak_request(reqwest::Method::POST, &url, &token, Some(json!(role_objects))).await?;
-    check_tidecloak_response(resp).await?;
+    ac.assign_user_client_roles(&user_id, &client_uuid, &json!(role_objects)).await
+        .map_err(|e| Error::new("Failed to assign roles", &e.to_string()))?;
     Ok(Json(json!({})))
 }
 
@@ -1439,11 +1341,9 @@ async fn remove_tide_user_roles(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
 
-    // Resolve role names to full client role objects (TideCloak requires { id, name })
     let input: Value = data.into_inner();
     let role_names: Vec<String> = match input.get("roles") {
         Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
@@ -1452,18 +1352,13 @@ async fn remove_tide_user_roles(
 
     let mut role_objects = Vec::new();
     for name in &role_names {
-        let encoded = percent_encoding::utf8_percent_encode(name, KC_PATH_SET);
-        let role_url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles/{encoded}");
-        let resp = tidecloak_request(reqwest::Method::GET, &role_url, &token, None).await?;
-        if resp.status().is_success() {
-            let role: Value = resp.json().await.unwrap_or_default();
+        if let Ok(role) = ac.get_client_role(&client_uuid, name).await {
             role_objects.push(role);
         }
     }
 
-    let url = format!("{base_url}/admin/realms/{realm}/users/{user_id}/role-mappings/clients/{client_uuid}");
-    let resp = tidecloak_request(reqwest::Method::DELETE, &url, &token, Some(json!(role_objects))).await?;
-    check_tidecloak_response(resp).await?;
+    ac.remove_user_client_roles(&user_id, &client_uuid, &json!(role_objects)).await
+        .map_err(|e| Error::new("Failed to remove roles", &e.to_string()))?;
     Ok(Json(json!({})))
 }
 
@@ -1478,11 +1373,9 @@ async fn set_tide_user_enabled(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let url = format!("{base_url}/admin/realms/{realm}/users/{user_id}");
-    let resp = tidecloak_request(reqwest::Method::PUT, &url, &token, Some(data.into_inner())).await?;
-    check_tidecloak_response(resp).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    ac.update_user(&user_id, &data.into_inner()).await
+        .map_err(|e| Error::new("Failed to update user", &e.to_string()))?;
     Ok(Json(json!({})))
 }
 
@@ -1505,43 +1398,21 @@ async fn get_tide_link_url(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
 
     let data = data.into_inner();
     let redirect_uri = data.redirect_uri.unwrap_or_else(|| crate::CONFIG.domain());
     let lifespan = data.lifespan.unwrap_or(43200);
     let client_id = crate::CONFIG.sso_client_id();
 
-    // The user_id is now a TideCloak user UUID (passed directly from the UI)
-    let params = format!(
-        "userId={}&lifespan={}&redirect_uri={}&client_id={}",
-        user_id,
+    let link_url = ac.tide_get_action_link(
+        &user_id,
+        &client_id,
+        &redirect_uri,
         lifespan,
-        percent_encoding::utf8_percent_encode(&redirect_uri, percent_encoding::NON_ALPHANUMERIC),
-        percent_encoding::utf8_percent_encode(&client_id, percent_encoding::NON_ALPHANUMERIC),
-    );
-    let link_api_url = format!(
-        "{base_url}/admin/realms/{realm}/tideAdminResources/get-required-action-link?{params}",
-    );
-
-    let resp = tidecloak_request(
-        reqwest::Method::POST,
-        &link_api_url,
-        &token,
-        Some(json!(["link-tide-account-action"])),
-    ).await?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        err!(format!("TideCloak link API error: {status} {body}"));
-    }
-
-    let link_url = resp
-        .text()
-        .await
-        .map_err(|e| Error::new("Failed to read link URL response", &e.to_string()))?;
+        &["link-tide-account-action"],
+    ).await
+        .map_err(|e| Error::new("TideCloak link API error", &e.to_string()))?;
 
     Ok(Json(json!(link_url)))
 }
@@ -1573,15 +1444,12 @@ async fn get_user_collection_access(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
 
-    // Get user's client role mappings
-    let url = format!("{base_url}/admin/realms/{realm}/users/{user_id}/role-mappings/clients/{client_uuid}");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, &token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-    let roles: Vec<Value> = resp.json().await.unwrap_or_default();
+    let roles_val = ac.get_user_client_roles(&user_id, &client_uuid).await
+        .map_err(|e| Error::new("Failed to get user client roles", &e.to_string()))?;
+    let roles: Vec<Value> = serde_json::from_value(roles_val).unwrap_or_default();
 
     // Parse org:{orgId}:collection:{collId}:{level} roles and enrich with collection names
     let collections = Collection::find_by_organization(&org_id, &conn).await;
@@ -1660,25 +1528,23 @@ async fn set_user_collection_access(
         err!("Collection not found in this organization");
     }
 
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
     let role_name = format!("org:{org_id}:collection:{}:{}", data.collection_id, data.access_level);
 
     // 1. Remove any existing org:{orgId}:collection:<uuid>:* roles for this collection from the user
-    remove_collection_roles_for_user(&base_url, &realm, &token, &client_uuid, &user_id, &org_id, &data.collection_id).await?;
+    remove_collection_roles_for_user_ac(&ac, &client_uuid, &user_id, &org_id, &data.collection_id).await?;
 
     // 2. Ensure the client role exists (create if not)
-    let role_obj = ensure_client_role(&base_url, &realm, &token, &client_uuid, &role_name).await?;
+    let role_obj = ensure_client_role_ac(&ac, &client_uuid, &role_name).await?;
 
     // 3. Assign the role to the user
-    let url = format!("{base_url}/admin/realms/{realm}/users/{user_id}/role-mappings/clients/{client_uuid}");
-    let resp = tidecloak_request(reqwest::Method::POST, &url, &token, Some(json!([role_obj]))).await?;
-    check_tidecloak_response(resp).await?;
+    ac.assign_user_client_roles(&user_id, &client_uuid, &json!([role_obj])).await
+        .map_err(|e| Error::new("Failed to assign role", &e.to_string()))?;
     info!("[Tide] TideCloak role assigned: {role_name}");
 
     // 4. Resolve TideCloak user → Vaultwarden user, ensure org membership, add to collection
-    match resolve_vaultwarden_user(&base_url, &realm, &token, &user_id, &conn).await {
+    match resolve_vaultwarden_user_ac(&ac, &user_id, &conn).await {
         Ok(vw_user) => {
             info!("[Tide] Resolved TC user {user_id} → VW user {} ({})", vw_user.uuid, vw_user.email);
             // 4a. Ensure user is a member of the organization (needs admin confirm for org key)
@@ -1726,14 +1592,13 @@ async fn remove_user_collection_access(
         err!("Organization not found", "Organization id's do not match");
     }
     let data = data.into_inner();
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
 
-    remove_collection_roles_for_user(&base_url, &realm, &token, &client_uuid, &user_id, &org_id, &data.collection_id).await?;
+    remove_collection_roles_for_user_ac(&ac, &client_uuid, &user_id, &org_id, &data.collection_id).await?;
 
     // Also remove the user from the Vaultwarden collection
-    if let Ok(vw_user) = resolve_vaultwarden_user(&base_url, &realm, &token, &user_id, &conn).await {
+    if let Ok(vw_user) = resolve_vaultwarden_user_ac(&ac, &user_id, &conn).await {
         let col_id: crate::db::models::CollectionId = data.collection_id.clone().into();
         if let Some(cu) = CollectionUser::find_by_collection_and_user(&col_id, &vw_user.uuid, &conn).await {
             cu.delete(&conn).await?;
@@ -1746,22 +1611,18 @@ async fn remove_user_collection_access(
 }
 
 /// Helper: Remove all org:{org_id}:collection:{collection_id}:* client roles from a user
-async fn remove_collection_roles_for_user(
-    base_url: &str,
-    realm: &str,
-    token: &str,
+async fn remove_collection_roles_for_user_ac(
+    ac: &AdminClient,
     client_uuid: &str,
     user_id: &str,
     org_id: &OrganizationId,
     collection_id: &str,
 ) -> Result<(), Error> {
     let prefix = format!("org:{org_id}:collection:{collection_id}:");
-    let url = format!("{base_url}/admin/realms/{realm}/users/{user_id}/role-mappings/clients/{client_uuid}");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, token, None).await?;
-    if !resp.status().is_success() {
-        return Ok(());
-    }
-    let roles: Vec<Value> = resp.json().await.unwrap_or_default();
+    let roles: Vec<Value> = match ac.get_user_client_roles(user_id, client_uuid).await {
+        Ok(val) => serde_json::from_value(val).unwrap_or_default(),
+        Err(_) => return Ok(()),
+    };
     let to_remove: Vec<&Value> = roles
         .iter()
         .filter(|r| {
@@ -1773,80 +1634,30 @@ async fn remove_collection_roles_for_user(
         .collect();
 
     if !to_remove.is_empty() {
-        let resp = tidecloak_request(
-            reqwest::Method::DELETE,
-            &url,
-            token,
-            Some(json!(to_remove)),
-        )
-        .await?;
-        check_tidecloak_response(resp).await?;
+        ac.remove_user_client_roles(user_id, client_uuid, &json!(to_remove)).await
+            .map_err(|e| Error::new("Failed to remove collection roles", &e.to_string()))?;
     }
     Ok(())
 }
 
-/// Helper: Ensure a client role exists, creating it if needed. Returns the full role object.
-async fn ensure_client_role(
-    base_url: &str,
-    realm: &str,
-    token: &str,
-    client_uuid: &str,
-    role_name: &str,
-) -> Result<Value, Error> {
-    let encoded = percent_encoding::utf8_percent_encode(role_name, KC_PATH_SET);
-    let role_url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles/{encoded}");
-
-    // Try to get the existing role
-    let resp = tidecloak_request(reqwest::Method::GET, &role_url, token, None).await?;
-    if resp.status().is_success() {
-        return resp.json().await.map_err(|e| Error::new("Failed to parse role", &e.to_string()));
-    }
-
-    // Role doesn't exist — create it
-    let roles_url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles");
-    let resp = tidecloak_request(
-        reqwest::Method::POST,
-        &roles_url,
-        token,
-        Some(json!({ "name": role_name })),
-    )
-    .await?;
-    check_tidecloak_response(resp).await?;
-
-    // Fetch the newly created role to get its full object (with id)
-    let resp = tidecloak_request(reqwest::Method::GET, &role_url, token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-    resp.json().await.map_err(|e| Error::new("Failed to parse created role", &e.to_string()))
-}
-
-/// Helper: Resolve a TideCloak user ID to a Vaultwarden User by fetching the
-/// user's email from TideCloak and looking up the corresponding Vaultwarden user.
-async fn resolve_vaultwarden_user(
-    base_url: &str,
-    realm: &str,
-    token: &str,
+/// Helper: Resolve a TideCloak user ID to a Vaultwarden User using AdminClient.
+async fn resolve_vaultwarden_user_ac(
+    ac: &AdminClient,
     tidecloak_user_id: &str,
     conn: &DbConn,
 ) -> Result<User, Error> {
-    // 1. Try SSO identity mapping first (authoritative link)
-    let issuer = format!("{}/realms/{}", base_url.trim_end_matches('/'), realm);
+    let issuer = format!("{}/realms/{}", ac.base_url(), ac.realm());
     let identifier = format!("{issuer}/{tidecloak_user_id}");
     if let Some((user, _sso)) = crate::db::models::SsoUser::find_by_identifier(&identifier, conn).await {
         return Ok(user);
     }
 
-    // 2. Fetch TideCloak user details for email fallback / auto-create
-    let url = format!("{base_url}/admin/realms/{realm}/users/{tidecloak_user_id}");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-    let tc_user: Value = resp.json().await
-        .map_err(|e| Error::new("Failed to parse TideCloak user", &e.to_string()))?;
+    let tc_user = ac.get_user(tidecloak_user_id).await
+        .map_err(|e| Error::new("Failed to get TideCloak user", &e.to_string()))?;
     let email = tc_user.get("email").and_then(|e| e.as_str())
         .ok_or_else(|| Error::new("TideCloak user has no email", ""))?;
 
-    // 3. Try email match
     if let Some(user) = User::find_by_mail(email, conn).await {
-        // Also create the SSO mapping so future lookups are fast
         let sso = crate::db::models::SsoUser {
             user_uuid: user.uuid.clone(),
             identifier: identifier.into(),
@@ -1859,7 +1670,6 @@ async fn resolve_vaultwarden_user(
         return Ok(user);
     }
 
-    // 4. Auto-create VW user from TideCloak data
     let name = match (tc_user.get("firstName").and_then(|v| v.as_str()), tc_user.get("lastName").and_then(|v| v.as_str())) {
         (Some(f), Some(l)) => format!("{f} {l}"),
         (Some(f), None) => f.to_string(),
@@ -1870,7 +1680,6 @@ async fn resolve_vaultwarden_user(
     user.save(conn).await?;
     info!("[Tide] Auto-created VW user {} for TC user {tidecloak_user_id}", user.email);
 
-    // Create SSO mapping
     let sso = crate::db::models::SsoUser {
         user_uuid: user.uuid.clone(),
         identifier: identifier.into(),
@@ -1906,18 +1715,14 @@ fn membership_type_to_suffix(atype: i32) -> &'static str {
     }
 }
 
-/// Resolve a Vaultwarden user UUID → TideCloak user ID.
-/// Uses the SsoUser identifier first, falls back to email search.
-async fn resolve_tidecloak_user_id(
-    base_url: &str,
-    realm: &str,
-    token: &str,
+/// Resolve a Vaultwarden user UUID → TideCloak user ID using AdminClient.
+async fn resolve_tidecloak_user_id_ac(
+    ac: &AdminClient,
     user_uuid: &crate::db::models::UserId,
     conn: &DbConn,
 ) -> Result<String, Error> {
-    let issuer = format!("{}/realms/{}", base_url.trim_end_matches('/'), realm);
+    let issuer = format!("{}/realms/{}", ac.base_url(), ac.realm());
 
-    // 1. Try SsoUser identifier: format is "{issuer}/{tc_user_id}"
     if let Some(sso_user) = crate::db::models::SsoUser::find_by_user_uuid(user_uuid, conn).await {
         let ident = sso_user.identifier.to_string();
         let prefix = format!("{issuer}/");
@@ -1928,14 +1733,10 @@ async fn resolve_tidecloak_user_id(
         }
     }
 
-    // 2. Fallback: look up VW user email → search TideCloak
     let vw_user = User::find_by_uuid(user_uuid, conn).await
         .ok_or_else(|| Error::new("VW user not found", &user_uuid.to_string()))?;
-    let search_url = format!("{base_url}/admin/realms/{realm}/users?email={}&exact=true",
-        percent_encoding::utf8_percent_encode(&vw_user.email, percent_encoding::NON_ALPHANUMERIC));
-    let resp = tidecloak_request(reqwest::Method::GET, &search_url, token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-    let users: Vec<Value> = resp.json().await.unwrap_or_default();
+    let users = ac.search_users_by_email(&vw_user.email).await
+        .map_err(|e| Error::new("Failed to search TideCloak users", &e.to_string()))?;
     match users.first().and_then(|u| u.get("id")).and_then(|v| v.as_str()) {
         Some(tc_id) => Ok(tc_id.to_string()),
         None => err!(format!("TideCloak user not found for email {}", vw_user.email)),
@@ -1943,21 +1744,17 @@ async fn resolve_tidecloak_user_id(
 }
 
 /// Remove all org:{org_id}:* client roles from a TideCloak user.
-async fn remove_org_roles_for_user(
-    base_url: &str,
-    realm: &str,
-    token: &str,
+async fn remove_org_roles_for_user_ac(
+    ac: &AdminClient,
     client_uuid: &str,
     tc_user_id: &str,
     org_id: &OrganizationId,
 ) -> Result<(), Error> {
     let prefix = format!("org:{org_id}:");
-    let url = format!("{base_url}/admin/realms/{realm}/users/{tc_user_id}/role-mappings/clients/{client_uuid}");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, token, None).await?;
-    if !resp.status().is_success() {
-        return Ok(());
-    }
-    let roles: Vec<Value> = resp.json().await.unwrap_or_default();
+    let roles: Vec<Value> = match ac.get_user_client_roles(tc_user_id, client_uuid).await {
+        Ok(val) => serde_json::from_value(val).unwrap_or_default(),
+        Err(_) => return Ok(()),
+    };
     let to_remove: Vec<&Value> = roles
         .iter()
         .filter(|r| {
@@ -1969,14 +1766,8 @@ async fn remove_org_roles_for_user(
         .collect();
 
     if !to_remove.is_empty() {
-        let resp = tidecloak_request(
-            reqwest::Method::DELETE,
-            &url,
-            token,
-            Some(json!(to_remove)),
-        )
-        .await?;
-        check_tidecloak_response(resp).await?;
+        ac.remove_user_client_roles(tc_user_id, client_uuid, &json!(to_remove)).await
+            .map_err(|e| Error::new("Failed to remove org roles", &e.to_string()))?;
     }
     Ok(())
 }
@@ -2011,99 +1802,81 @@ pub async fn sync_membership_to_tidecloak_with_actor(
 ) -> Result<(), Error> {
     info!("[Tide] sync_membership_to_tidecloak: user={user_uuid}, org={org_id}, type={membership_type}, access_all={access_all}");
 
-    let (base_url, realm) = tidecloak_config().map_err(|e| {
-        error!("[Tide] sync step 1/6 FAILED — tidecloak_config: {e}");
-        e
-    })?;
-    info!("[Tide] sync step 1/6 OK — config: {base_url}, realm={realm}");
-
-    // Use acting user's token (the admin performing the action) if provided, otherwise target user's own token
     let token_user = acting_user.unwrap_or(user_uuid);
-    let token = get_admin_sso_token(token_user, conn).await.map_err(|e| {
-        error!("[Tide] sync step 2/6 FAILED — get_admin_sso_token({token_user}): {e}");
+    let ac = build_admin_client(token_user, conn).await.map_err(|e| {
+        error!("[Tide] sync FAILED — build_admin_client: {e}");
         e
     })?;
-    info!("[Tide] sync step 2/6 OK — got SSO token ({} chars)", token.len());
+    info!("[Tide] sync step 1/6 OK — AdminClient built");
 
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await.map_err(|e| {
-        error!("[Tide] sync step 3/6 FAILED — get_tidecloak_client_uuid: {e}");
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await.map_err(|e| {
+        error!("[Tide] sync step 3/6 FAILED — get client uuid: {e}");
         e
     })?;
     info!("[Tide] sync step 3/6 OK — client_uuid={client_uuid}");
 
-    let tc_user_id = resolve_tidecloak_user_id(&base_url, &realm, &token, user_uuid, conn).await.map_err(|e| {
+    let tc_user_id = resolve_tidecloak_user_id_ac(&ac, user_uuid, conn).await.map_err(|e| {
         error!("[Tide] sync step 4/6 FAILED — resolve_tidecloak_user_id: {e}");
         e
     })?;
     info!("[Tide] sync step 4/6 OK — tc_user_id={tc_user_id}");
 
-    // Remove all existing org:* roles for this user in this org
-    remove_org_roles_for_user(&base_url, &realm, &token, &client_uuid, &tc_user_id, org_id).await.map_err(|e| {
-        error!("[Tide] sync step 5/6 FAILED — remove_org_roles_for_user: {e}");
+    remove_org_roles_for_user_ac(&ac, &client_uuid, &tc_user_id, org_id).await.map_err(|e| {
+        error!("[Tide] sync step 5/6 FAILED — remove_org_roles: {e}");
         e
     })?;
     info!("[Tide] sync step 5/6 OK — removed existing org roles");
 
-    // Build the list of roles to assign
     let suffix = membership_type_to_suffix(membership_type);
     let mut role_names: Vec<String> = vec![format!("org:{org_id}:{suffix}")];
 
-    if access_all {
+    // Owner inherits accessAll via composite — only add explicitly for non-owner types
+    if access_all && membership_type != 0 {
         role_names.push(format!("org:{org_id}:accessAll"));
     }
 
-    if membership_type == 3 || membership_type == 4 {
-        if access_all {
-            role_names.push(format!("org:{org_id}:perm:createNewCollections"));
-            role_names.push(format!("org:{org_id}:perm:editAnyCollection"));
-            role_names.push(format!("org:{org_id}:perm:deleteAnyCollection"));
-        }
+    if (membership_type == 3 || membership_type == 4) && access_all {
+        role_names.push(format!("org:{org_id}:perm:createNewCollections"));
+        role_names.push(format!("org:{org_id}:perm:editAnyCollection"));
+        role_names.push(format!("org:{org_id}:perm:deleteAnyCollection"));
     }
 
     info!("[Tide] sync step 6/7 — ensuring & assigning roles: {:?}", role_names);
 
-    // Ensure each role exists
     let mut role_objs: Vec<Value> = Vec::new();
     for name in &role_names {
-        let role_obj = ensure_client_role(&base_url, &realm, &token, &client_uuid, name).await.map_err(|e| {
+        let role_obj = ensure_client_role_ac(&ac, &client_uuid, name).await.map_err(|e| {
             error!("[Tide] sync step 6/7 FAILED — ensure_client_role({}): {e}", name);
             e
         })?;
         role_objs.push(role_obj);
     }
 
-    // For owners, add orgOwner + manage-users as composites of org:{uuid}:owner BEFORE assigning it
+    // For owners, add orgOwner + manage-users as composites of org:{uuid}:owner
     if membership_type == 0 {
         let owner_role_name = format!("org:{org_id}:owner");
         if let Some(owner_role_obj) = role_objs.iter().find(|r| r.get("name").and_then(|n| n.as_str()) == Some(&owner_role_name)) {
             if let Some(owner_role_id) = owner_role_obj.get("id").and_then(|v| v.as_str()) {
-                // Check if orgOwner already exists; if not, create it + add admin composites
-                let encoded_org_owner = percent_encoding::utf8_percent_encode("orgOwner", KC_PATH_SET);
-                let org_owner_url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles/{encoded_org_owner}");
-                let org_owner_resp = tidecloak_request(reqwest::Method::GET, &org_owner_url, &token, None).await?;
-                let org_owner_existed = org_owner_resp.status().is_success();
+                let org_owner_existed = ac.get_client_role(&client_uuid, "orgOwner").await.is_ok();
                 let org_owner_role = if org_owner_existed {
-                    org_owner_resp.json::<Value>().await.map_err(|e| Error::new("Failed to parse orgOwner role", &e.to_string()))?
+                    ac.get_client_role(&client_uuid, "orgOwner").await
+                        .map_err(|e| Error::new("Failed to get orgOwner role", &e.to_string()))?
                 } else {
-                    ensure_client_role(&base_url, &realm, &token, &client_uuid, "orgOwner").await.map_err(|e| {
-                        error!("[Tide] sync step 6/7 FAILED — ensure orgOwner role: {e}");
-                        e
-                    })?
+                    ensure_client_role_ac(&ac, &client_uuid, "orgOwner").await?
                 };
 
-                // Add orgOwner as composite child of org:{uuid}:owner
-                match add_composite_role(&base_url, &realm, &token, owner_role_id, &org_owner_role).await {
-                    Ok(()) => info!("[Tide] sync step 6/7 OK — added orgOwner composite to {owner_role_name}"),
-                    Err(e) => error!("[Tide] sync step 6/7 FAILED — add orgOwner composite: {e}"),
+                match ac.add_composite_roles(owner_role_id, &json!([org_owner_role])).await {
+                    Ok(_) => info!("[Tide] sync — added orgOwner composite to {owner_role_name}"),
+                    Err(e) => error!("[Tide] sync — add orgOwner composite: {e}"),
                 }
 
-                // Add org:{orgId}:accessAll as composite child of org:{orgId}:owner
+                // Add accessAll as composite of owner
                 {
                     let access_all_name = format!("org:{org_id}:accessAll");
-                    match ensure_client_role(&base_url, &realm, &token, &client_uuid, &access_all_name).await {
+                    match ensure_client_role_ac(&ac, &client_uuid, &access_all_name).await {
                         Ok(access_all_role) => {
-                            match add_composite_role(&base_url, &realm, &token, owner_role_id, &access_all_role).await {
-                                Ok(()) => info!("[Tide] sync — added {access_all_name} composite to {owner_role_name}"),
+                            match ac.add_composite_roles(owner_role_id, &json!([access_all_role])).await {
+                                Ok(_) => info!("[Tide] sync — added {access_all_name} composite to {owner_role_name}"),
                                 Err(e) => error!("[Tide] sync — failed to add {access_all_name} composite: {e}"),
                             }
                         }
@@ -2111,33 +1884,26 @@ pub async fn sync_membership_to_tidecloak_with_actor(
                     }
                 }
 
-                // Only add admin composites when orgOwner was just created
                 if !org_owner_existed {
                     let org_owner_id = org_owner_role.get("id").and_then(|v| v.as_str()).unwrap_or("");
                     if !org_owner_id.is_empty() {
-                        match add_admin_composites(&base_url, &realm, &token, org_owner_id).await {
-                            Ok(()) => info!("[Tide] sync step 6/7 OK — added admin composites to new orgOwner"),
-                            Err(e) => warn!("[Tide] sync step 6/7 — failed to add admin composites to orgOwner: {e}"),
+                        match add_admin_composites_ac(&ac, org_owner_id).await {
+                            Ok(()) => info!("[Tide] sync — added admin composites to new orgOwner"),
+                            Err(e) => warn!("[Tide] sync — failed to add admin composites to orgOwner: {e}"),
                         }
                     }
                 }
 
-                // Create pending PolicyApprovals for orgOwner and appUser if they don't exist
+                // Create pending PolicyApprovals
                 {
                     let existing = PolicyApproval::find_pending_by_org(org_id, conn).await;
 
-                    // orgOwner PolicyApproval (UserContext signing)
                     let has_org_owner = existing.iter().any(|a| a.role_id == "orgOwner")
                         || PolicyApproval::find_committed_by_role("orgOwner", conn).await.is_some();
                     if !has_org_owner {
                         let approval = PolicyApproval::new(
-                            org_id.clone(),
-                            "orgOwner".to_string(),
-                            user_uuid.to_string(),
-                            None,
-                            1,
-                            String::new(), // policyRequestData filled by frontend
-                            None,
+                            org_id.clone(), "orgOwner".to_string(), user_uuid.to_string(),
+                            None, 1, String::new(), None,
                         );
                         match approval.save(conn).await {
                             Ok(()) => info!("[Tide] sync — created pending PolicyApproval for orgOwner"),
@@ -2145,18 +1911,12 @@ pub async fn sync_membership_to_tidecloak_with_actor(
                         }
                     }
 
-                    // appUser PolicyApproval (crypto policy — PolicyEnabledEncryption/Decryption)
                     let has_app_user = existing.iter().any(|a| a.role_id == "appUser")
                         || PolicyApproval::find_committed_by_role("appUser", conn).await.is_some();
                     if !has_app_user {
                         let approval = PolicyApproval::new(
-                            org_id.clone(),
-                            "appUser".to_string(),
-                            user_uuid.to_string(),
-                            None,
-                            1,
-                            String::new(), // policyRequestData filled by frontend
-                            None,
+                            org_id.clone(), "appUser".to_string(), user_uuid.to_string(),
+                            None, 1, String::new(), None,
                         );
                         match approval.save(conn).await {
                             Ok(()) => info!("[Tide] sync — created pending PolicyApproval for appUser"),
@@ -2165,26 +1925,16 @@ pub async fn sync_membership_to_tidecloak_with_actor(
                     }
                 }
 
-                // Also ensure appUser role exists in TideCloak
+                // Ensure appUser role exists
                 {
-                    let encoded_app_user = percent_encoding::utf8_percent_encode("appUser", KC_PATH_SET);
-                    let app_user_url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles/{encoded_app_user}");
-                    let app_user_resp = tidecloak_request(reqwest::Method::GET, &app_user_url, &token, None).await?;
-                    let app_user_role = if app_user_resp.status().is_success() {
-                        app_user_resp.json::<Value>().await.map_err(|e| Error::new("Failed to parse appUser role", &e.to_string()))?
-                    } else {
-                        ensure_client_role(&base_url, &realm, &token, &client_uuid, "appUser").await.map_err(|e| {
-                            error!("[Tide] sync — ensure appUser role: {e}");
-                            e
-                        })?
-                    };
+                    let app_user_role = ensure_client_role_ac(&ac, &client_uuid, "appUser").await
+                        .map_err(|e| { error!("[Tide] sync — ensure appUser role: {e}"); e })?;
 
-                    // If org:{uuid}:user role exists, add appUser as its composite
                     let user_role_name = format!("org:{org_id}:user");
                     if let Some(user_role_obj) = role_objs.iter().find(|r| r.get("name").and_then(|n| n.as_str()) == Some(&user_role_name)) {
                         if let Some(user_role_id) = user_role_obj.get("id").and_then(|v| v.as_str()) {
-                            match add_composite_role(&base_url, &realm, &token, user_role_id, &app_user_role).await {
-                                Ok(()) => info!("[Tide] sync — added appUser composite to {user_role_name}"),
+                            match ac.add_composite_roles(user_role_id, &json!([app_user_role])).await {
+                                Ok(_) => info!("[Tide] sync — added appUser composite to {user_role_name}"),
                                 Err(e) => error!("[Tide] sync — failed to add appUser composite: {e}"),
                             }
                         }
@@ -2194,14 +1944,12 @@ pub async fn sync_membership_to_tidecloak_with_actor(
         }
     }
 
-    // Now assign the roles to the user
     if !role_objs.is_empty() {
-        let url = format!("{base_url}/admin/realms/{realm}/users/{tc_user_id}/role-mappings/clients/{client_uuid}");
-        let resp = tidecloak_request(reqwest::Method::POST, &url, &token, Some(json!(role_objs))).await?;
-        check_tidecloak_response(resp).await.map_err(|e| {
-            error!("[Tide] sync step 6/7 FAILED — assign role mappings: {e}");
-            e
-        })?;
+        ac.assign_user_client_roles(&tc_user_id, &client_uuid, &json!(role_objs)).await
+            .map_err(|e| {
+                error!("[Tide] sync step 6/7 FAILED — assign role mappings: {e}");
+                Error::new("Failed to assign roles", &e.to_string())
+            })?;
     }
 
     info!("[Tide] Synced org membership to TideCloak: user={tc_user_id}, org={org_id}, roles={:?}", role_names);
@@ -2285,8 +2033,6 @@ async fn reset_crypto_policy(
 // ---------- Admin Policy (proxy from TideCloak) ----------
 
 /// Fetch the admin policy from TideCloak's public endpoint.
-/// This is the VVK-signed admin policy needed to authorize PolicySignRequest commits.
-/// Endpoint: {sso_authority}/tide-policy-resources/admin-policy
 #[get("/organizations/<org_id>/tide/admin-policy")]
 async fn get_admin_policy(
     org_id: OrganizationId,
@@ -2297,29 +2043,15 @@ async fn get_admin_policy(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let authority = crate::CONFIG.sso_authority();
-    let url = format!("{authority}/tide-policy-resources/admin-policy");
-
-    let client = reqwest::Client::new();
-    let resp = client.get(&url).send().await
-        .map_err(|e| Error::new("Failed to fetch admin policy from TideCloak", &e.to_string()))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        err!(format!("TideCloak admin policy error: {status} {body}"));
-    }
-
-    // Returns base64-encoded admin policy bytes
-    let admin_policy_base64 = resp.text().await
-        .map_err(|e| Error::new("Failed to read admin policy response", &e.to_string()))?;
+    let (base_url, realm) = tidecloak_config()?;
+    let ac = AdminClient::from_url(&base_url, &realm, ""); // public endpoint, no token needed
+    let admin_policy_base64 = ac.tide_get_admin_policy().await
+        .map_err(|e| Error::new("Failed to fetch admin policy", &e.to_string()))?;
 
     Ok(Json(json!({ "adminPolicy": admin_policy_base64 })))
 }
 
 /// Fetch a user's previous UserContext + VVK signature from TideCloak.
-/// Requires manage-users role on TideCloak side.
-/// Used for DynamicData[1] and [2] in the org owner contract.
 #[get("/organizations/<org_id>/tide/user-context/<tc_user_id>/<client_id>")]
 async fn get_tide_user_context(
     org_id: OrganizationId,
@@ -2332,20 +2064,13 @@ async fn get_tide_user_context(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-
-    let url = format!("{base_url}/admin/realms/{realm}/tide-admin/user-context/{tc_user_id}/{client_id}");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, &token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-
-    let body: Value = resp.json().await
-        .map_err(|e| Error::new("Failed to parse user context response", &e.to_string()))?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let body = ac.tide_get_user_context(&tc_user_id, &client_id).await
+        .map_err(|e| Error::new("Failed to get user context", &e.to_string()))?;
     Ok(Json(body))
 }
 
 /// Fetch the VVK public key from TideCloak's public endpoint.
-/// Used for DynamicData[3] in the org owner contract.
 #[get("/organizations/<org_id>/tide/vvk-public")]
 async fn get_vvk_public(
     org_id: OrganizationId,
@@ -2356,26 +2081,14 @@ async fn get_vvk_public(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let authority = crate::CONFIG.sso_authority();
-    let url = format!("{authority}/tide-policy-resources/vvk-public");
-
-    let client = reqwest::Client::new();
-    let resp = client.get(&url).send().await
-        .map_err(|e| Error::new("Failed to fetch VVK public key from TideCloak", &e.to_string()))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        err!(format!("TideCloak VVK public key error: {status} {body}"));
-    }
-
-    let body: Value = resp.json().await
-        .map_err(|e| Error::new("Failed to parse VVK response", &e.to_string()))?;
+    let (base_url, realm) = tidecloak_config()?;
+    let ac = AdminClient::from_url(&base_url, &realm, "");
+    let body = ac.tide_get_vvk_public().await
+        .map_err(|e| Error::new("Failed to fetch VVK public key", &e.to_string()))?;
     Ok(Json(body))
 }
 
 /// Proxy to TideCloak admin API: POST /role-policy/{roleId}/init-cert
-/// Stores a committed policy (initCert) on a role's TideRoleDraftEntity.
 #[post("/organizations/<org_id>/tide/role-policy/<role_id>/init-cert", data = "<data>")]
 async fn set_role_policy_init_cert(
     org_id: OrganizationId,
@@ -2388,19 +2101,9 @@ async fn set_role_policy_init_cert(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-
-    let encoded_role_id = percent_encoding::utf8_percent_encode(&role_id, KC_PATH_SET).to_string();
-    let url = format!(
-        "{base_url}/admin/realms/{realm}/tide-admin/role-policy/{encoded_role_id}/init-cert"
-    );
-
-    let resp = tidecloak_request(reqwest::Method::POST, &url, &token, Some(data.into_inner())).await?;
-    let resp = check_tidecloak_response(resp).await?;
-
-    let body: Value = resp.json().await
-        .map_err(|e| Error::new("Failed to parse init-cert response", &e.to_string()))?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let body = ac.tide_set_role_init_cert(&role_id, &data.into_inner()).await
+        .map_err(|e| Error::new("Failed to set init-cert", &e.to_string()))?;
     Ok(Json(body))
 }
 
@@ -2416,16 +2119,9 @@ async fn list_change_requests_users(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-
-    let url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/users/requests");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, &token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-
-    let body: Value = resp.json().await
-        .map_err(|e| Error::new("Failed to parse change-requests response", &e.to_string()))?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let body = ac.tide_list_change_requests("users").await
+        .map_err(|e| Error::new("Failed to list user change requests", &e.to_string()))?;
     Ok(Json(body))
 }
 
@@ -2439,16 +2135,9 @@ async fn list_change_requests_roles(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-
-    let url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/roles/requests");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, &token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-
-    let body: Value = resp.json().await
-        .map_err(|e| Error::new("Failed to parse change-requests response", &e.to_string()))?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let body = ac.tide_list_change_requests("roles").await
+        .map_err(|e| Error::new("Failed to list role change requests", &e.to_string()))?;
     Ok(Json(body))
 }
 
@@ -2462,39 +2151,26 @@ async fn list_change_requests_clients(
     if org_id != headers.org_id {
         err!("Organization not found", "Organization id's do not match");
     }
-
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-
-    let url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/clients/requests");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, &token, None).await?;
-    let resp = check_tidecloak_response(resp).await?;
-
-    let body: Value = resp.json().await
-        .map_err(|e| Error::new("Failed to parse change-requests response", &e.to_string()))?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let body = ac.tide_list_change_requests("clients").await
+        .map_err(|e| Error::new("Failed to list client change requests", &e.to_string()))?;
     Ok(Json(body))
 }
 
 /// Inject policyRoleId and dynamicData from the org's committed PolicyApproval into the request body.
 /// TideCloak's MultiAdmin signer reads dynamicData from the JSON and injects it into the
 /// BaseTideRequest bytes as raw [len][data] pairs (no version header).
-async fn inject_policy_data(body: &mut Value, org_id: &OrganizationId, approval: &PolicyApproval, base_url: &str, realm: &str, token: &str) {
+async fn inject_policy_data(body: &mut Value, org_id: &OrganizationId, approval: &PolicyApproval, ac: &AdminClient) {
     if let Value::Object(map) = body {
         // Resolve role name to TideCloak UUID if needed
         let role_id = if approval.role_id.contains('-') && approval.role_id.len() > 30 {
             approval.role_id.clone()
         } else {
-            // It's a role name — look up the UUID from TideCloak
-            if let Ok(client_uuid) = get_tidecloak_client_uuid(base_url, realm, token).await {
-                let encoded_name = percent_encoding::utf8_percent_encode(&approval.role_id, KC_PATH_SET).to_string();
-                let role_url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles/{encoded_name}");
-                if let Ok(role_resp) = tidecloak_request(reqwest::Method::GET, &role_url, token, None).await {
-                    if role_resp.status().is_success() {
-                        if let Ok(role_body) = role_resp.json::<Value>().await {
-                            role_body.get("id").and_then(|v| v.as_str()).unwrap_or(&approval.role_id).to_string()
-                        } else { approval.role_id.clone() }
-                    } else { approval.role_id.clone() }
-                } else { approval.role_id.clone() }
+            if let Ok(client_uuid) = get_tidecloak_client_uuid_ac(ac).await {
+                ac.get_client_role(&client_uuid, &approval.role_id).await
+                    .ok()
+                    .and_then(|r| r.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    .unwrap_or_else(|| approval.role_id.clone())
             } else { approval.role_id.clone() }
         };
         info!("[Tide] inject_policy_data: resolved role_id '{}' -> '{}'", approval.role_id, role_id);
@@ -2505,117 +2181,58 @@ async fn inject_policy_data(body: &mut Value, org_id: &OrganizationId, approval:
         // Query TideCloak for the affected user's committed UC + sig using the changeSetId
         let mut prev_uc = String::new();
         let mut prev_uc_sig = String::new();
-        if let Some(change_set_id) = map.get("changeSetId").and_then(|v| v.as_str()) {
+        if let Some(change_set_id) = map.get("changeSetId").and_then(|v| v.as_str()).map(|s| s.to_string()) {
             // Attempt 1: Use the change-set-specific user-context endpoint
-            let uc_url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/{change_set_id}/user-context");
-            info!("[Tide] inject_policy_data: fetching UC from {uc_url}");
-            if let Ok(resp) = tidecloak_request(reqwest::Method::GET, &uc_url, token, None).await {
-                let status = resp.status();
-                if status.is_success() {
-                    if let Ok(uc_body) = resp.json::<Value>().await {
-                        prev_uc = uc_body.get("accessProof").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        prev_uc_sig = uc_body.get("accessProofSig").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        info!("[Tide] inject_policy_data: UC response for change-set {change_set_id}: accessProof={} chars, accessProofSig={} chars",
-                            prev_uc.len(), prev_uc_sig.len());
-                        if !prev_uc.is_empty() {
-                            let preview: String = prev_uc.chars().take(100).collect();
-                            info!("[Tide] inject_policy_data: accessProof preview: {preview}...");
-                        }
-                    }
-                } else {
-                    warn!("[Tide] inject_policy_data: UC fetch returned status {status} for change-set {change_set_id}");
-                }
+            info!("[Tide] inject_policy_data: fetching UC for change-set {change_set_id}");
+            if let Ok(uc_body) = ac.tide_get_user_context_by_change_set(&change_set_id).await {
+                prev_uc = uc_body.get("accessProof").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                prev_uc_sig = uc_body.get("accessProofSig").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                info!("[Tide] inject_policy_data: UC: accessProof={} chars, sig={} chars", prev_uc.len(), prev_uc_sig.len());
             }
 
-            // Attempt 2: If UC is empty, find the user from the pending change sets list
-            // and try the direct user-context endpoint
+            // Attempt 2: fallback via pending change sets list
             if prev_uc.is_empty() {
-                warn!("[Tide] inject_policy_data: accessProof is EMPTY via change-set endpoint, trying fallback...");
+                warn!("[Tide] inject_policy_data: accessProof EMPTY, trying fallback...");
+                if let Ok(changes_val) = ac.tide_list_change_requests("users").await {
+                    if let Some(changes) = changes_val.as_array() {
+                        for change in changes {
+                            let cs_id = change.get("changeSetId").and_then(|v| v.as_str()).unwrap_or("");
+                            if cs_id == change_set_id {
+                                if let Some(records) = change.get("userRecord").and_then(|v| v.as_array()) {
+                                    if let Some(record) = records.first() {
+                                        let username = record.get("username").and_then(|v| v.as_str()).unwrap_or("");
+                                        let record_client_id = record.get("clientId").and_then(|v| v.as_str()).unwrap_or("");
+                                        info!("[Tide] inject_policy_data: found user '{username}' (client '{record_client_id}')");
 
-                // Get the client UUID for the tidewarden client
-                if let Ok(_client_uuid) = get_tidecloak_client_uuid(base_url, realm, token).await {
-                    // Fetch pending user change sets to find the userId
-                    let list_url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/users/requests");
-                    if let Ok(resp) = tidecloak_request(reqwest::Method::GET, &list_url, token, None).await {
-                        if resp.status().is_success() {
-                            if let Ok(changes) = resp.json::<Vec<Value>>().await {
-                                // Find the change set matching our changeSetId
-                                for change in &changes {
-                                    let cs_id = change.get("changeSetId").and_then(|v| v.as_str()).unwrap_or("");
-                                    if cs_id == change_set_id {
-                                        // Found the matching change set — extract user info from userRecord
-                                        if let Some(records) = change.get("userRecord").and_then(|v| v.as_array()) {
-                                            if let Some(record) = records.first() {
-                                                let username = record.get("username").and_then(|v| v.as_str()).unwrap_or("");
-                                                let record_client_id = record.get("clientId").and_then(|v| v.as_str()).unwrap_or("");
-                                                info!("[Tide] inject_policy_data: found user '{}' (client '{}') for change-set {change_set_id}",
-                                                    username, record_client_id);
-
-                                                // Look up the TC user ID by username
-                                                let users_url = format!("{base_url}/admin/realms/{realm}/users?username={}&exact=true",
-                                                    percent_encoding::utf8_percent_encode(username, KC_PATH_SET));
-                                                if let Ok(resp) = tidecloak_request(reqwest::Method::GET, &users_url, token, None).await {
-                                                    if resp.status().is_success() {
-                                                        if let Ok(users) = resp.json::<Vec<Value>>().await {
-                                                            if let Some(tc_user) = users.first() {
-                                                                let tc_user_id = tc_user.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                                                if !tc_user_id.is_empty() && !record_client_id.is_empty() {
-                                                                    // Try direct user-context endpoint
-                                                                    let direct_url = format!("{base_url}/admin/realms/{realm}/tide-admin/user-context/{tc_user_id}/{record_client_id}");
-                                                                    info!("[Tide] inject_policy_data: trying direct UC fetch: {direct_url}");
-                                                                    if let Ok(resp) = tidecloak_request(reqwest::Method::GET, &direct_url, token, None).await {
-                                                                        if resp.status().is_success() {
-                                                                            if let Ok(uc_body) = resp.json::<Value>().await {
-                                                                                prev_uc = uc_body.get("accessProof").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                                                                prev_uc_sig = uc_body.get("accessProofSig").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                                                                info!("[Tide] inject_policy_data: direct UC: accessProof={} chars, sig={} chars",
-                                                                                    prev_uc.len(), prev_uc_sig.len());
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
+                                        if let Ok(users) = ac.search_users_by_username(username).await {
+                                            if let Some(tc_user) = users.first() {
+                                                let tc_user_id = tc_user.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                                if !tc_user_id.is_empty() && !record_client_id.is_empty() {
+                                                    if let Ok(uc_body) = ac.tide_get_user_context(tc_user_id, record_client_id).await {
+                                                        prev_uc = uc_body.get("accessProof").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                        prev_uc_sig = uc_body.get("accessProofSig").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                        info!("[Tide] inject_policy_data: direct UC: accessProof={} chars, sig={} chars",
+                                                            prev_uc.len(), prev_uc_sig.len());
                                                     }
                                                 }
                                             }
                                         }
-                                        break;
                                     }
                                 }
-                                if prev_uc.is_empty() {
-                                    warn!("[Tide] inject_policy_data: could not find change-set {change_set_id} in pending list or user has no committed UC");
-                                }
+                                break;
                             }
+                        }
+                        if prev_uc.is_empty() {
+                            warn!("[Tide] inject_policy_data: could not find UC for change-set {change_set_id}");
                         }
                     }
                 }
             }
         }
 
-        // Fetch VVK public key
-        let authority = crate::CONFIG.sso_authority();
-        let vvk_url = format!("{authority}/tide-policy-resources/vvk-public");
-        let mut vvk_pub = String::new();
-        if let Ok(resp) = reqwest::Client::new().get(&vvk_url).send().await {
-            if resp.status().is_success() {
-                if let Ok(vvk_body) = resp.json::<Value>().await {
-                    // Try common field names
-                    vvk_pub = vvk_body.get("public").and_then(|v| v.as_str())
-                        .or_else(|| vvk_body.get("publicKey").and_then(|v| v.as_str()))
-                        .or_else(|| vvk_body.get("key").and_then(|v| v.as_str()))
-                        .or_else(|| vvk_body.as_str())
-                        .unwrap_or("").to_string();
-                    info!("[Tide] inject_policy_data: VVK public key: {} chars", vvk_pub.len());
-                }
-            }
-        }
-
-        // dynamicData: [executorRole, previousUC, previousUCSig, vvkPubKey]
-        // TideCloak's MultiAdmin converts each string to UTF-8 bytes via .getBytes(UTF_8)
-        map.insert("dynamicData".to_string(), json!([owner_role, prev_uc, prev_uc_sig, vvk_pub]));
-        info!("[Tide] inject_policy_data: dynamicData elements: role={}, uc={} chars, sig={} chars, vvk={} chars",
-            owner_role.len(), prev_uc.len(), prev_uc_sig.len(), vvk_pub.len());
+        map.insert("dynamicData".to_string(), json!([owner_role, prev_uc, prev_uc_sig]));
+        info!("[Tide] inject_policy_data: dynamicData: role={}, uc={} chars, sig={} chars",
+            owner_role.len(), prev_uc.len(), prev_uc_sig.len());
     }
 }
 
@@ -2659,77 +2276,43 @@ fn tide_memory_build(fields: &[&[u8]]) -> Vec<u8> {
     buf
 }
 
-/// Build raw [4-byte LE length][data] pairs WITHOUT a TideMemory version header.
-/// This matches how TideCloak's MultiAdmin signer builds dynamic data.
-fn tide_raw_fields_build(fields: &[&[u8]]) -> Vec<u8> {
-    let total: usize = fields.iter().map(|f| 4 + f.len()).sum::<usize>();
-    let mut buf = Vec::with_capacity(total);
-    for field in fields {
-        buf.extend_from_slice(&(field.len() as i32).to_le_bytes());
-        buf.extend_from_slice(field);
-    }
-    buf
-}
-
 /// Post-process sign response: inject dynamic data into the changeSetDraftRequests bytes
 /// (field 5 of the BaseTideRequest TideMemory).
 ///
 /// TideCloak's MultiAdmin already injects dynamic data from the JSON request, but it only
 /// has what we sent it. This function ensures the bytes match, and logs what's actually in them.
-/// The inner dynamic data uses raw [len][data] pairs (NO version header), matching MultiAdmin's format.
+/// The inner dynamic data uses TideMemory format (4-byte version header + [len][data] pairs).
 async fn inject_dynamic_data_into_sign_response(
     response_body: &mut Value,
     org_id: &OrganizationId,
     change_set_id: &str,
-    base_url: &str,
-    realm: &str,
-    token: &str,
+    ac: &AdminClient,
 ) {
     // Fetch previous UserContext + VVK signature for the affected user
     let mut prev_uc = String::new();
     let mut prev_uc_sig = String::new();
     if !change_set_id.is_empty() {
-        let uc_url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/{change_set_id}/user-context");
-        if let Ok(resp) = tidecloak_request(reqwest::Method::GET, &uc_url, token, None).await {
-            if resp.status().is_success() {
-                if let Ok(uc_body) = resp.json::<Value>().await {
-                    prev_uc = uc_body.get("accessProof").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    prev_uc_sig = uc_body.get("accessProofSig").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                }
+        match ac.tide_get_user_context_by_change_set(change_set_id).await {
+            Ok(uc_body) => {
+                prev_uc = uc_body.get("accessProof").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                prev_uc_sig = uc_body.get("accessProofSig").and_then(|v| v.as_str()).unwrap_or("").to_string();
             }
-        }
-    }
-
-    // Fetch VVK public key
-    let authority = crate::CONFIG.sso_authority();
-    let vvk_url = format!("{authority}/tide-policy-resources/vvk-public");
-    let mut vvk_pub = String::new();
-    if let Ok(resp) = reqwest::Client::new().get(&vvk_url).send().await {
-        if resp.status().is_success() {
-            if let Ok(vvk_body) = resp.json::<Value>().await {
-                vvk_pub = vvk_body.get("public").and_then(|v| v.as_str())
-                    .or_else(|| vvk_body.get("publicKey").and_then(|v| v.as_str()))
-                    .or_else(|| vvk_body.get("key").and_then(|v| v.as_str()))
-                    .or_else(|| vvk_body.as_str())
-                    .unwrap_or("").to_string();
-            }
+            Err(e) => warn!("[Tide] inject_dynamic: failed to fetch UC by change-set: {e}"),
         }
     }
 
     let owner_role = format!("org:{}:owner", org_id.as_ref());
 
-    // Build inner dynamic data as raw [len][data] pairs (NO version header)
-    // This matches TideCloak MultiAdmin's format.
-    // The contract's TryReadField reads with startOffset=0 (no version skip).
-    let dynamic_data = tide_raw_fields_build(&[
+    // Build inner dynamic data as TideMemory (4-byte version header + [len][data] pairs).
+    // The contract's TryReadField skips a 4-byte header (pos = 4), so we must include it.
+    let dynamic_data = tide_memory_build(&[
         owner_role.as_bytes(),
         prev_uc.as_bytes(),
         prev_uc_sig.as_bytes(),
-        vvk_pub.as_bytes(),
     ]);
 
-    info!("[Tide] inject_dynamic: built dynamic data: {} bytes (role={}, uc={} chars, sig={} chars, vvk={} chars)",
-        dynamic_data.len(), owner_role.len(), prev_uc.len(), prev_uc_sig.len(), vvk_pub.len());
+    info!("[Tide] inject_dynamic: built dynamic data: {} bytes (role={}, uc={} chars, sig={} chars)",
+        dynamic_data.len(), owner_role.len(), prev_uc.len(), prev_uc_sig.len());
 
     // Process each item in the response and inject dynamic data into changeSetDraftRequests
     let items: Vec<&mut Value> = match response_body {
@@ -2814,15 +2397,14 @@ async fn sign_change_request(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
 
     let mut body = data.into_inner();
     let change_set_id = body.get("changeSetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
     let has_committed_policy = if let Some(approval) = PolicyApproval::find_committed_by_role("orgOwner", &conn).await {
         info!("[Tide] sign: found committed orgOwner PolicyApproval role_id={}, status={}", approval.role_id, approval.status);
-        inject_policy_data(&mut body, &org_id, &approval, &base_url, &realm, &token).await;
+        inject_policy_data(&mut body, &org_id, &approval, &ac).await;
         info!("[Tide] sign: injected policyRoleId={:?}", body.get("policyRoleId"));
         true
     } else {
@@ -2830,18 +2412,24 @@ async fn sign_change_request(
         false
     };
 
-    let url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/sign");
-    info!("[Tide] sign: forwarding to {url}");
-    let resp = tidecloak_request(reqwest::Method::POST, &url, &token, Some(body)).await?;
-    let resp = check_tidecloak_response(resp).await?;
-
-    let mut body: Value = resp.json().await
-        .map_err(|e| Error::new("Failed to parse sign response", &e.to_string()))?;
+    // Verify dynamicData is present before forwarding
+    if let Some(dd) = body.get("dynamicData") {
+        info!("[Tide] sign: dynamicData present in body: {}", dd);
+    } else {
+        warn!("[Tide] sign: dynamicData is MISSING from body!");
+    }
+    info!("[Tide] sign: forwarding body={}", body);
+    let mut body = ac.tide_sign_change_request(&body).await
+        .map_err(|e| {
+            let msg = format!("TideCloak sign failed: {e}");
+            error!("[Tide] {msg}");
+            Error::new(&msg, "")
+        })?;
 
     // Inject dynamic data into the BaseTideRequest bytes so the Forseti contract
     // can read the executor role, previous UserContext, and VVK public key.
     if has_committed_policy {
-        inject_dynamic_data_into_sign_response(&mut body, &org_id, &change_set_id, &base_url, &realm, &token).await;
+        inject_dynamic_data_into_sign_response(&mut body, &org_id, &change_set_id, &ac).await;
     }
 
     Ok(Json(body))
@@ -2860,8 +2448,7 @@ async fn commit_change_request(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
 
     let mut body = data.into_inner();
     // Strip signedRequest — frontend sends it but TideCloak's ChangeSetRequest model doesn't have this field
@@ -2871,18 +2458,14 @@ async fn commit_change_request(
     let approval = PolicyApproval::find_committed_by_role("orgOwner", &conn).await;
     if let Some(approval) = approval {
         info!("[Tide] commit: found committed orgOwner PolicyApproval role_id={}, status={}", approval.role_id, approval.status);
-        inject_policy_data(&mut body, &org_id, &approval, &base_url, &realm, &token).await;
+        inject_policy_data(&mut body, &org_id, &approval, &ac).await;
     } else {
         warn!("[Tide] commit: NO committed orgOwner PolicyApproval found");
     }
 
-    let url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/commit");
-    info!("[Tide] commit: forwarding to {url}, body={body}");
-    let resp = tidecloak_request(reqwest::Method::POST, &url, &token, Some(body)).await?;
-    let resp = check_tidecloak_response(resp).await?;
-
-    let body: Value = resp.json().await
-        .map_err(|e| Error::new("Failed to parse commit response", &e.to_string()))?;
+    info!("[Tide] commit: forwarding body={body}");
+    let body = ac.tide_commit_change_request(&body).await
+        .map_err(|e| Error::new("TideCloak commit failed", &e.to_string()))?;
     Ok(Json(body))
 }
 
@@ -2899,21 +2482,16 @@ async fn cancel_change_request(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
 
     let mut body = data.into_inner();
     let approval = PolicyApproval::find_committed_by_role("orgOwner", &conn).await;
     if let Some(approval) = approval {
-        inject_policy_data(&mut body, &org_id, &approval, &base_url, &realm, &token).await;
+        inject_policy_data(&mut body, &org_id, &approval, &ac).await;
     }
 
-    let url = format!("{base_url}/admin/realms/{realm}/tide-admin/change-set/cancel");
-    let resp = tidecloak_request(reqwest::Method::POST, &url, &token, Some(body)).await?;
-    let resp = check_tidecloak_response(resp).await?;
-
-    let body: Value = resp.json().await
-        .map_err(|e| Error::new("Failed to parse cancel response", &e.to_string()))?;
+    let body = ac.tide_cancel_change_request(&body).await
+        .map_err(|e| Error::new("TideCloak cancel failed", &e.to_string()))?;
     Ok(Json(body))
 }
 
@@ -2932,8 +2510,7 @@ async fn add_review_change_request(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
 
     let body = data.into_inner();
     let change_set_id = body.get("changeSetId").and_then(|v| v.as_str()).unwrap_or("");
@@ -2947,8 +2524,7 @@ async fn add_review_change_request(
         _ => vec![],
     };
 
-    let url = format!("{base_url}/admin/realms/{realm}/tideAdminResources/add-review");
-    let mut form_params = vec![
+    let mut form_params: Vec<(&str, String)> = vec![
         ("changeSetId", change_set_id.to_string()),
         ("changeSetType", change_set_type.to_string()),
         ("actionType", action_type.to_string()),
@@ -2957,16 +2533,8 @@ async fn add_review_change_request(
         form_params.push(("requests", req.clone()));
     }
 
-    let client = reqwest::Client::new();
-    let resp = client.post(&url)
-        .header("Authorization", format!("Bearer {token}"))
-        .form(&form_params)
-        .send()
-        .await
-        .map_err(|e| Error::new("TideCloak request failed", &e.to_string()))?;
-    let resp = check_tidecloak_response(resp).await?;
-
-    let text = resp.text().await.unwrap_or_default();
+    let text = ac.tide_add_review(&form_params).await
+        .map_err(|e| Error::new("TideCloak add-review failed", &e.to_string()))?;
     Ok(Json(json!({ "message": text })))
 }
 
@@ -2982,31 +2550,21 @@ async fn add_rejection_change_request(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
 
     let body = data.into_inner();
     let change_set_id = body.get("changeSetId").and_then(|v| v.as_str()).unwrap_or("");
     let change_set_type = body.get("changeSetType").and_then(|v| v.as_str()).unwrap_or("");
     let action_type = body.get("actionType").and_then(|v| v.as_str()).unwrap_or("");
 
-    let url = format!("{base_url}/admin/realms/{realm}/tideAdminResources/add-rejection");
-    let form_params = vec![
+    let form_params: Vec<(&str, String)> = vec![
         ("changeSetId", change_set_id.to_string()),
         ("changeSetType", change_set_type.to_string()),
         ("actionType", action_type.to_string()),
     ];
 
-    let client = reqwest::Client::new();
-    let resp = client.post(&url)
-        .header("Authorization", format!("Bearer {token}"))
-        .form(&form_params)
-        .send()
-        .await
-        .map_err(|e| Error::new("TideCloak request failed", &e.to_string()))?;
-    let resp = check_tidecloak_response(resp).await?;
-
-    let text = resp.text().await.unwrap_or_default();
+    let text = ac.tide_add_rejection(&form_params).await
+        .map_err(|e| Error::new("TideCloak add-rejection failed", &e.to_string()))?;
     Ok(Json(json!({ "message": text })))
 }
 
@@ -3023,21 +2581,16 @@ async fn get_org_owner_status(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
 
     // Check if orgOwner role exists in TideCloak
-    let encoded = percent_encoding::utf8_percent_encode("orgOwner", KC_PATH_SET).to_string();
-    let url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles/{encoded}");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, &token, None).await?;
-
-    let role_exists = resp.status().is_success();
-    let role_id: Option<String> = if role_exists {
-        let role: Value = resp.json().await.unwrap_or_default();
-        role.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())
-    } else {
-        None
+    let (role_exists, role_id) = match ac.get_client_role(&client_uuid, "orgOwner").await {
+        Ok(role) => {
+            let id = role.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+            (true, id)
+        }
+        Err(_) => (false, None),
     };
 
     // Determine policy status
@@ -3077,40 +2630,29 @@ async fn create_org_owner_role(
         err!("Organization not found", "Organization id's do not match");
     }
 
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
 
-    let role = ensure_client_role(&base_url, &realm, &token, &client_uuid, "orgOwner").await?;
+    let role = ensure_client_role_ac(&ac, &client_uuid, "orgOwner").await?;
     let role_id = role.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
     // Add realm-management admin composites to orgOwner so org owners can manage their own members
     if !role_id.is_empty() {
-        match add_admin_composites(&base_url, &realm, &token, role_id).await {
+        match add_admin_composites_ac(&ac, role_id).await {
             Ok(()) => info!("[Tide] Added admin composites to orgOwner role"),
             Err(e) => warn!("[Tide] Failed to add admin composites to orgOwner: {e}"),
         }
     }
 
     // Set orgOwner as a default client role so all new users get it on login
-    let default_url = format!(
-        "{base_url}/admin/realms/{realm}/roles/default-roles-{realm}/composites"
-    );
     let default_body = json!([{
         "id": role_id,
         "name": "orgOwner",
         "clientRole": true,
         "containerId": client_uuid,
     }]);
-    match tidecloak_request(reqwest::Method::POST, &default_url, &token, Some(default_body)).await {
-        Ok(resp) if resp.status().is_success() => {
-            info!("[Tide] Set orgOwner as default client role");
-        }
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            warn!("[Tide] Failed to set orgOwner as default role: {status} {body}");
-        }
+    match ac.add_default_role(&default_body).await {
+        Ok(_) => info!("[Tide] Set orgOwner as default client role"),
         Err(e) => warn!("[Tide] Failed to set orgOwner as default role: {e}"),
     }
 
@@ -3134,34 +2676,24 @@ async fn reset_org_owner_policy(
     PolicyApproval::delete_all(&conn).await?;
 
     // Also clear initCert on TideCloak for the orgOwner role
-    let (base_url, realm) = tidecloak_config()?;
-    let token = get_admin_sso_token(&headers.user.uuid, &conn).await?;
-    let client_uuid = get_tidecloak_client_uuid(&base_url, &realm, &token).await?;
+    let ac = build_admin_client(&headers.user.uuid, &conn).await?;
+    let client_uuid = get_tidecloak_client_uuid_ac(&ac).await?;
 
-    let encoded = percent_encoding::utf8_percent_encode("orgOwner", KC_PATH_SET).to_string();
-    let url = format!("{base_url}/admin/realms/{realm}/clients/{client_uuid}/roles/{encoded}");
-    let resp = tidecloak_request(reqwest::Method::GET, &url, &token, None).await?;
-
-    let role_id_str = if resp.status().is_success() {
-        let role: Value = resp.json().await.unwrap_or_default();
-        if let Some(role_id) = role.get("id").and_then(|v| v.as_str()) {
-            let encoded_role_id = percent_encoding::utf8_percent_encode(role_id, KC_PATH_SET).to_string();
-            let cert_url = format!(
-                "{base_url}/admin/realms/{realm}/tide-admin/role-policy/{encoded_role_id}/init-cert"
-            );
-            // Store empty initCert to clear the old one
-            let body = json!({ "initCert": "" });
-            match tidecloak_request(reqwest::Method::POST, &cert_url, &token, Some(body)).await {
-                Ok(r) if r.status().is_success() => info!("[Tide] Cleared initCert for orgOwner role"),
-                Ok(r) => warn!("[Tide] Failed to clear initCert: {} {}", r.status(), r.text().await.unwrap_or_default()),
-                Err(e) => warn!("[Tide] Failed to clear initCert: {e}"),
+    let role_id_str = match ac.get_client_role(&client_uuid, "orgOwner").await {
+        Ok(role) => {
+            if let Some(role_id) = role.get("id").and_then(|v| v.as_str()) {
+                // Store empty initCert to clear the old one
+                let body = json!({ "initCert": "" });
+                match ac.tide_set_role_init_cert(role_id, &body).await {
+                    Ok(_) => info!("[Tide] Cleared initCert for orgOwner role"),
+                    Err(e) => warn!("[Tide] Failed to clear initCert: {e}"),
+                }
+                Some(role_id.to_string())
+            } else {
+                None
             }
-            Some(role_id.to_string())
-        } else {
-            None
         }
-    } else {
-        None
+        Err(_) => None,
     };
 
     // Create a new pending PolicyApproval so the user can go through the flow again
