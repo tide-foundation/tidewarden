@@ -3,7 +3,8 @@ set -euo pipefail
 
 # ============================================================================
 # Azure Deployment Script for TideWarden
-# Builds the Docker image, pushes to ACR, and updates the Container App.
+# Builds the Docker image via ACR Tasks (cloud build), then updates the
+# Container App. No local Docker required.
 # Run azure-infra.sh first to provision the infrastructure.
 # ============================================================================
 
@@ -38,7 +39,6 @@ usage() {
 
 # ── Pre-flight checks ──────────────────────────────────────────────────────
 command -v az &>/dev/null || err "Azure CLI (az) is not installed."
-command -v docker &>/dev/null || err "Docker is not installed."
 az account show &>/dev/null || err "Not logged in. Run: az login"
 
 # Verify infrastructure exists
@@ -58,44 +58,50 @@ log "  Resource Group: ${RESOURCE_GROUP}"
 log "  Container App:  ${TIDEWARDEN_APP_NAME}"
 echo ""
 
-# ── 1. Login to ACR ────────────────────────────────────────────────────────
-log "Logging into Azure Container Registry..."
-az acr login --name "${ACR_NAME}"
-ok "ACR login successful"
+# ── 1. Build image via ACR Tasks (cloud build) ─────────────────────────────
+log "Building image via ACR Tasks (cloud build, no local Docker needed)..."
 
-# ── 2. Build Docker image ──────────────────────────────────────────────────
-log "Building Docker image..."
-
-# Determine which Dockerfile to use
-DOCKERFILE="${ROOT_DIR}/docker/Dockerfile.debian"
-if [[ ! -f "${DOCKERFILE}" ]]; then
-    err "Dockerfile not found at ${DOCKERFILE}"
+DOCKERFILE="docker/Dockerfile.debian"
+if [[ ! -f "${ROOT_DIR}/${DOCKERFILE}" ]]; then
+    err "Dockerfile not found at ${ROOT_DIR}/${DOCKERFILE}"
 fi
 
-docker build \
-    -t "${TIDEWARDEN_IMAGE}" \
-    -f "${DOCKERFILE}" \
+# Run from the project root so az acr build can find the context
+cd "${ROOT_DIR}"
+
+# ACR Tasks' dependency scanner can't parse FROM lines with @sha256 digests.
+# We create a patched copy of the Dockerfile replacing digests with tags,
+# include it in the source archive, and point --file at it.
+PATCHED_DF="Dockerfile.acr"
+sed 's/@sha256:[a-f0-9]\{64\}//g' "${DOCKERFILE}" > "${PATCHED_DF}"
+
+az acr build \
+    --registry "${ACR_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --image "${PROJECT_NAME}:${IMAGE_TAG}" \
+    --file "${PATCHED_DF}" \
     --build-arg DB=postgresql \
     --build-arg CARGO_PROFILE=release \
     --platform linux/amd64 \
-    "${ROOT_DIR}"
+    --timeout 7200 \
+    .
 
-ok "Image built: ${TIDEWARDEN_IMAGE}"
+rm -f "${PATCHED_DF}"
 
-# ── 3. Push to ACR ─────────────────────────────────────────────────────────
-log "Pushing image to ACR..."
-docker push "${TIDEWARDEN_IMAGE}"
-ok "Image pushed: ${TIDEWARDEN_IMAGE}"
+ok "Image built and pushed: ${TIDEWARDEN_IMAGE}"
 
-# Also tag and push as latest if a specific tag was given
+# Also tag as latest if a specific tag was given
 if [[ "${IMAGE_TAG}" != "latest" ]]; then
-    LATEST_IMAGE="${ACR_NAME}.azurecr.io/${PROJECT_NAME}:latest"
-    docker tag "${TIDEWARDEN_IMAGE}" "${LATEST_IMAGE}"
-    docker push "${LATEST_IMAGE}"
-    ok "Also pushed: ${LATEST_IMAGE}"
+    az acr import \
+        --name "${ACR_NAME}" \
+        --source "${ACR_NAME}.azurecr.io/${PROJECT_NAME}:${IMAGE_TAG}" \
+        --image "${PROJECT_NAME}:latest" \
+        --force \
+        --output none
+    ok "Also tagged as: ${ACR_NAME}.azurecr.io/${PROJECT_NAME}:latest"
 fi
 
-# ── 4. Update Container App ────────────────────────────────────────────────
+# ── 2. Update Container App ────────────────────────────────────────────────
 log "Updating Container App with new image..."
 az containerapp update \
     --name "${TIDEWARDEN_APP_NAME}" \
@@ -104,10 +110,9 @@ az containerapp update \
     --output none
 ok "Container App updated"
 
-# ── 5. Wait for deployment ─────────────────────────────────────────────────
+# ── 3. Wait for deployment ─────────────────────────────────────────────────
 log "Waiting for new revision to become active..."
 
-# Give a few seconds for the revision to begin provisioning
 sleep 5
 
 LATEST_REVISION=$(az containerapp revision list \
@@ -143,7 +148,7 @@ if [[ ${RETRIES} -ge ${MAX_RETRIES} ]]; then
     warn "  az containerapp revision list --name ${TIDEWARDEN_APP_NAME} --resource-group ${RESOURCE_GROUP}"
 fi
 
-# ── 6. Show deployed URL ───────────────────────────────────────────────────
+# ── 4. Show deployed URL ───────────────────────────────────────────────────
 TIDEWARDEN_FQDN=$(az containerapp show \
     --name "${TIDEWARDEN_APP_NAME}" \
     --resource-group "${RESOURCE_GROUP}" \

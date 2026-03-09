@@ -4,8 +4,8 @@ set -euo pipefail
 # ============================================================================
 # Azure Infrastructure Provisioning for TideWarden
 # Creates: Resource Group, ACR, Log Analytics, Container Apps Environment,
-#          PostgreSQL Flexible Server, TideCloak Container App,
-#          TideWarden Container App
+#          PostgreSQL Flexible Server, TideWarden Container App
+# Note: TideCloak is hosted externally — set TIDECLOAK_URL in azure-config.sh
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -25,21 +25,13 @@ az account show &>/dev/null || err "Not logged in. Run: az login"
 
 log "Subscription: $(az account show --query '{name:name, id:id}' -o tsv)"
 
-# Prompt for passwords if not set
+# Prompt for PostgreSQL password if not set
 if [[ -z "${PG_ADMIN_PASSWORD}" ]]; then
     echo -ne "${YELLOW}Enter PostgreSQL admin password: ${NC}"
     read -rs PG_ADMIN_PASSWORD
     echo
     [[ -z "${PG_ADMIN_PASSWORD}" ]] && err "PostgreSQL password is required"
     export PG_ADMIN_PASSWORD
-fi
-
-if [[ -z "${KC_ADMIN_PASSWORD}" ]]; then
-    echo -ne "${YELLOW}Enter TideCloak admin password: ${NC}"
-    read -rs KC_ADMIN_PASSWORD
-    echo
-    [[ -z "${KC_ADMIN_PASSWORD}" ]] && err "TideCloak admin password is required"
-    export KC_ADMIN_PASSWORD
 fi
 
 echo ""
@@ -49,7 +41,7 @@ log "  Location:       ${LOCATION}"
 log "  Resource Group: ${RESOURCE_GROUP}"
 log "  ACR:            ${ACR_NAME}"
 log "  PostgreSQL:     ${PG_SERVER_NAME}"
-log "  TideCloak App:  ${TIDECLOAK_APP_NAME}"
+log "  TideCloak:      ${TIDECLOAK_URL} (external)"
 log "  TideWarden App: ${TIDEWARDEN_APP_NAME}"
 echo ""
 
@@ -82,12 +74,12 @@ az monitor log-analytics workspace create \
 LOG_ANALYTICS_ID=$(az monitor log-analytics workspace show \
     --resource-group "${RESOURCE_GROUP}" \
     --workspace-name "${LOG_ANALYTICS_WORKSPACE}" \
-    --query customerId -o tsv)
+    --query customerId -o tsv | tr -d '[:space:]')
 
 LOG_ANALYTICS_KEY=$(az monitor log-analytics workspace get-shared-keys \
     --resource-group "${RESOURCE_GROUP}" \
     --workspace-name "${LOG_ANALYTICS_WORKSPACE}" \
-    --query primarySharedKey -o tsv)
+    --query primarySharedKey -o tsv | tr -d '\r\n')
 
 ok "Log Analytics: ${LOG_ANALYTICS_WORKSPACE}"
 
@@ -110,6 +102,7 @@ az postgres flexible-server create \
     --location "${LOCATION}" \
     --admin-user "${PG_ADMIN_USER}" \
     --admin-password "${PG_ADMIN_PASSWORD}" \
+    --tier "${PG_TIER}" \
     --sku-name "${PG_SKU}" \
     --storage-size "${PG_STORAGE_SIZE}" \
     --version "${PG_VERSION}" \
@@ -146,51 +139,17 @@ PG_FQDN=$(az postgres flexible-server show \
 
 DATABASE_URL="postgresql://${PG_ADMIN_USER}:${PG_ADMIN_PASSWORD}@${PG_FQDN}:5432/${PG_DB_NAME}?sslmode=require"
 
-# ── 6. TideCloak Container App ─────────────────────────────────────────────
-log "Creating TideCloak Container App..."
+# ── 6. TideWarden Container App ────────────────────────────────────────────
+log "Creating TideWarden Container App..."
 
-# Get the Container Apps Environment default domain for internal URLs
+# Get the Container Apps Environment default domain
 CAE_DOMAIN=$(az containerapp env show \
     --name "${CONTAINER_ENV_NAME}" \
     --resource-group "${RESOURCE_GROUP}" \
     --query properties.defaultDomain -o tsv)
 
-az containerapp create \
-    --name "${TIDECLOAK_APP_NAME}" \
-    --resource-group "${RESOURCE_GROUP}" \
-    --environment "${CONTAINER_ENV_NAME}" \
-    --image "${TIDECLOAK_IMAGE}" \
-    --target-port 8080 \
-    --ingress external \
-    --min-replicas "${TIDECLOAK_MIN_REPLICAS}" \
-    --max-replicas "${TIDECLOAK_MAX_REPLICAS}" \
-    --cpu "${TIDECLOAK_CPU}" \
-    --memory "${TIDECLOAK_MEMORY}" \
-    --env-vars \
-        "KC_BOOTSTRAP_ADMIN_USERNAME=${KC_ADMIN_USER}" \
-        "KC_BOOTSTRAP_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD}" \
-        "KC_HOSTNAME=https://${TIDECLOAK_APP_NAME}.${CAE_DOMAIN}" \
-        "SYSTEM_HOME_ORK=https://sork1.tideprotocol.com" \
-        "USER_HOME_ORK=https://sork1.tideprotocol.com" \
-        "THRESHOLD_T=3" \
-        "THRESHOLD_N=5" \
-    --output none
-
-TIDECLOAK_FQDN=$(az containerapp show \
-    --name "${TIDECLOAK_APP_NAME}" \
-    --resource-group "${RESOURCE_GROUP}" \
-    --query properties.configuration.ingress.fqdn -o tsv)
-
-ok "TideCloak: https://${TIDECLOAK_FQDN}"
-
-# ── 7. TideWarden Container App ────────────────────────────────────────────
-log "Creating TideWarden Container App..."
-
-# Get ACR credentials for Container App to pull images
-ACR_USERNAME=$(az acr credential show --name "${ACR_NAME}" --query username -o tsv)
-ACR_PASSWORD=$(az acr credential show --name "${ACR_NAME}" --query "passwords[0].value" -o tsv)
-
 # Use a placeholder image initially; azure-deploy.sh will update it
+# Create the app first with a public placeholder (no ACR auth needed yet)
 az containerapp create \
     --name "${TIDEWARDEN_APP_NAME}" \
     --resource-group "${RESOURCE_GROUP}" \
@@ -202,9 +161,6 @@ az containerapp create \
     --max-replicas "${TIDEWARDEN_MAX_REPLICAS}" \
     --cpu "${TIDEWARDEN_CPU}" \
     --memory "${TIDEWARDEN_MEMORY}" \
-    --registry-server "${ACR_NAME}.azurecr.io" \
-    --registry-username "${ACR_USERNAME}" \
-    --registry-password "${ACR_PASSWORD}" \
     --env-vars \
         "ROCKET_ADDRESS=0.0.0.0" \
         "ROCKET_PORT=80" \
@@ -213,7 +169,7 @@ az containerapp create \
         "SSO_ENABLED=true" \
         "SSO_ONLY=true" \
         "SSO_PKCE=true" \
-        "TIDECLOAK_LOCAL_URL=https://${TIDECLOAK_FQDN}" \
+        "TIDECLOAK_LOCAL_URL=${TIDECLOAK_URL}" \
         "DOMAIN=https://${TIDEWARDEN_APP_NAME}.${CAE_DOMAIN}" \
         "SIGNUPS_ALLOWED=true" \
         "LOG_LEVEL=info" \
@@ -226,6 +182,37 @@ TIDEWARDEN_FQDN=$(az containerapp show \
 
 ok "TideWarden: https://${TIDEWARDEN_FQDN}"
 
+# Assign system-managed identity and grant AcrPull so deploy can swap to ACR images
+log "Configuring managed identity for ACR pull..."
+az containerapp identity assign \
+    --name "${TIDEWARDEN_APP_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --system-assigned \
+    --output none
+
+IDENTITY_PRINCIPAL=$(az containerapp identity show \
+    --name "${TIDEWARDEN_APP_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --query principalId -o tsv | tr -d '[:space:]')
+
+ACR_ID=$(az acr show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" --query id -o tsv | tr -d '[:space:]')
+
+az role assignment create \
+    --assignee "${IDENTITY_PRINCIPAL}" \
+    --role AcrPull \
+    --scope "${ACR_ID}" \
+    --output none
+
+# Register the ACR with managed identity on the container app
+az containerapp registry set \
+    --name "${TIDEWARDEN_APP_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --server "${ACR_NAME}.azurecr.io" \
+    --identity system \
+    --output none
+
+ok "Managed identity configured for ACR pull"
+
 # ── Summary ─────────────────────────────────────────────────────────────────
 echo ""
 echo "============================================="
@@ -237,7 +224,7 @@ echo "  ACR:             ${ACR_NAME}.azurecr.io"
 echo "  PostgreSQL:      ${PG_FQDN}"
 echo "  Database:        ${PG_DB_NAME}"
 echo ""
-echo "  TideCloak URL:   https://${TIDECLOAK_FQDN}"
+echo "  TideCloak:       ${TIDECLOAK_URL} (external)"
 echo "  TideWarden URL:  https://${TIDEWARDEN_FQDN}"
 echo ""
 echo "  Next step: Run azure-deploy.sh to build and"
