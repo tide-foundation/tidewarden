@@ -81,6 +81,8 @@ pub struct SsoUser {
     pub user_uuid: UserId,
     pub identifier: OIDCIdentifier,
     pub tide_encrypted_key: Option<String>,
+    pub sso_access_token: Option<String>,
+    pub sso_refresh_token: Option<String>,
 }
 
 pub enum UserKdfType {
@@ -557,6 +559,18 @@ impl SsoUser {
                 .filter(sso_users::user_uuid.eq(user_uuid))
                 .first::<Self>(conn)
                 .ok()
+        }}
+    }
+
+    pub async fn update_sso_tokens(user_uuid: &UserId, access_token: &str, refresh_token: Option<&str>, conn: &DbConn) -> EmptyResult {
+        db_run! { conn: {
+            diesel::update(sso_users::table.filter(sso_users::user_uuid.eq(user_uuid)))
+                .set((
+                    sso_users::sso_access_token.eq(Some(access_token)),
+                    sso_users::sso_refresh_token.eq(refresh_token),
+                ))
+                .execute(conn)
+                .map_res("Error updating SSO tokens")
         }}
     }
 

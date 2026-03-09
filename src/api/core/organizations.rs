@@ -188,6 +188,7 @@ async fn create_organization(headers: Headers, data: Json<OrgData>, conn: DbConn
     if !CONFIG.is_org_creation_allowed(&headers.user.email) {
         err!("User not allowed to create organizations")
     }
+
     if OrgPolicy::is_applicable_to_user(&headers.user.uuid, OrgPolicyType::SingleOrg, None, &conn).await {
         err!(
             "You may not create an organization. You belong to an organization which has a policy that prohibits you from being a member of any other organization."
@@ -213,6 +214,13 @@ async fn create_organization(headers: Headers, data: Json<OrgData>, conn: DbConn
     org.save(&conn).await?;
     member.save(&conn).await?;
     collection.save(&conn).await?;
+
+    // Best-effort: sync org owner role to TideCloak
+    if let Err(e) = crate::api::core::tide::sync_membership_to_tidecloak(
+        &member.user_uuid, &member.org_uuid, member.atype, member.access_all, &conn,
+    ).await {
+        warn!("[Tide] Org role sync failed on create_organization: {e}");
+    }
 
     Ok(Json(org.to_json()))
 }
@@ -1157,6 +1165,13 @@ async fn send_invite(
         new_member.status = member_status;
         new_member.save(&conn).await?;
 
+        // Best-effort: sync invited member's role to TideCloak (use inviting admin's token as fallback)
+        if let Err(e) = crate::api::core::tide::sync_membership_to_tidecloak_with_actor(
+            &user.uuid, &org_id, new_member.atype, new_member.access_all, Some(&headers.user.uuid), &conn,
+        ).await {
+            warn!("[Tide] Org role sync failed on send_invite: {e}");
+        }
+
         let invite_url = mail::generate_invite_url(
             &user,
             org_id.clone(),
@@ -1477,7 +1492,10 @@ async fn _confirm_invite(
         err!("Only Owners can confirm Managers, Admins or Owners")
     }
 
-    if member_to_confirm.status != MembershipStatus::Accepted as i32 {
+    // Allow re-confirming users who are Confirmed but missing akey (e.g. SSO auto-confirmed users)
+    if member_to_confirm.status != MembershipStatus::Accepted as i32
+        && !(member_to_confirm.status == MembershipStatus::Confirmed as i32 && member_to_confirm.akey.is_empty())
+    {
         err!("User in invalid state")
     }
 
@@ -1684,7 +1702,16 @@ async fn edit_member(
     )
     .await;
 
-    member_to_edit.save(&conn).await
+    member_to_edit.save(&conn).await?;
+
+    // Best-effort: sync updated role to TideCloak (use admin's token)
+    if let Err(e) = crate::api::core::tide::sync_membership_to_tidecloak_with_actor(
+        &member_to_edit.user_uuid, &org_id, member_to_edit.atype, member_to_edit.access_all, Some(&headers.user.uuid), &conn,
+    ).await {
+        warn!("[Tide] Org role sync failed on edit_member: {e}");
+    }
+
+    Ok(())
 }
 
 #[delete("/organizations/<org_id>/users", data = "<data>")]
@@ -2415,6 +2442,13 @@ async fn import(org_id: OrganizationId, data: Json<OrgImportData>, headers: Head
                 // Save the member after sending an email
                 // If sending fails the member will not be saved to the database, and will not result in the admin needing to reinvite the users manually
                 new_member.save(&conn).await?;
+
+                // Best-effort: sync imported member role to TideCloak (use importing admin's token as fallback)
+                if let Err(e) = crate::api::core::tide::sync_membership_to_tidecloak_with_actor(
+                    &user.uuid, &org_id, new_member.atype, new_member.access_all, Some(&headers.user.uuid), &conn,
+                ).await {
+                    warn!("[Tide] Org role sync failed on import: {e}");
+                }
 
                 log_event(
                     EventType::OrganizationUserInvited as i32,

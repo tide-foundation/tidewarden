@@ -110,7 +110,10 @@ pub fn decode_jwt<T: DeserializeOwned>(token: &str, issuer: String) -> Result<T,
         Err(err) => match *err.kind() {
             ErrorKind::InvalidToken => err!("Token is invalid"),
             ErrorKind::InvalidIssuer => err!("Issuer is invalid"),
-            ErrorKind::ExpiredSignature => err!("Token has expired"),
+            ErrorKind::ExpiredSignature => {
+                debug!("Token has expired (expected with SSO-only auth)");
+                err_silent!("Token has expired")
+            }
             _ => err!(format!("Error decoding JWT: {:?}", err)),
         },
     }
@@ -503,9 +506,85 @@ use rocket::{
 };
 
 use crate::db::{
-    models::{Collection, Device, Membership, MembershipStatus, MembershipType, User, UserStampException},
+    models::{Collection, Device, Membership, MembershipStatus, MembershipType, SsoUser, User, UserStampException},
     DbConn,
 };
+
+/// Extract TideCloak client roles from an SSO access token JWT (base64 decode only, no signature check).
+/// Returns the list of role strings from `resource_access.tidewarden.roles`, or an empty vec.
+fn extract_sso_jwt_roles(token: &str) -> Vec<String> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() < 2 {
+        return Vec::new();
+    }
+    // base64url-decode the payload
+    let payload = match data_encoding::BASE64URL_NOPAD.decode(parts[1].as_bytes())
+        .or_else(|_| data_encoding::BASE64URL.decode(parts[1].as_bytes()))
+        .or_else(|_| {
+            // Handle standard base64 with +/ instead of -_
+            let b64 = parts[1].replace('-', "+").replace('_', "/");
+            data_encoding::BASE64_NOPAD.decode(b64.as_bytes())
+                .or_else(|_| data_encoding::BASE64.decode(b64.as_bytes()))
+        }) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let json: serde_json::Value = match serde_json::from_slice(&payload) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    // Navigate: resource_access.tidewarden.roles
+    json.get("resource_access")
+        .and_then(|ra| ra.get("tidewarden"))
+        .and_then(|tw| tw.get("roles"))
+        .and_then(|r| r.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+/// Map a MembershipType to the expected TideCloak org role suffix.
+fn membership_type_to_role_suffix(mt: MembershipType) -> &'static str {
+    match mt {
+        MembershipType::Owner => "owner",
+        MembershipType::Admin => "admin",
+        MembershipType::Manager => "manager",
+        MembershipType::User => "user",
+    }
+}
+
+/// Check that the SSO JWT contains the expected org role for this membership.
+/// Returns true if SSO is not configured or if the role is present.
+/// Returns false (and logs a warning) if the JWT lacks the required role.
+fn verify_jwt_org_role(
+    sso_roles: &[String],
+    org_id: &OrganizationId,
+    membership_type: MembershipType,
+) -> bool {
+    if sso_roles.is_empty() {
+        // No SSO roles available — SSO may not be configured, allow DB-only check
+        return true;
+    }
+    let suffix = membership_type_to_role_suffix(membership_type);
+    let expected = format!("org:{org_id}:{suffix}");
+    if sso_roles.iter().any(|r| r == &expected) {
+        return true;
+    }
+    // Also allow if JWT has a higher-privilege role for the same org
+    let dominated_by: &[&str] = match membership_type {
+        MembershipType::User => &["manager", "admin", "owner"],
+        MembershipType::Manager => &["admin", "owner"],
+        MembershipType::Admin => &["owner"],
+        MembershipType::Owner => &[],
+    };
+    for higher in dominated_by {
+        let alt = format!("org:{org_id}:{higher}");
+        if sso_roles.iter().any(|r| r == &alt) {
+            return true;
+        }
+    }
+    warn!("[TideCloak] JWT role check failed: expected '{expected}' (or higher) in SSO token roles");
+    false
+}
 
 pub struct Host {
     pub host: String,
@@ -722,27 +801,38 @@ impl<'r> FromRequest<'r> for OrgHeaders {
                     err_handler!("The current user isn't member of the organization");
                 };
 
+                let membership_type = match MembershipType::from_i32(membership.atype) {
+                    Some(mt) => mt,
+                    None => err_handler!("Unknown user type in the database"),
+                };
+
+                let membership_status = match MembershipStatus::from_i32(membership.status) {
+                    Some(ms) => ms,
+                    None => err_handler!("User status is either revoked or invalid."),
+                };
+
+                // Cross-check: verify the user's SSO JWT contains the expected org role.
+                // This prevents privilege escalation if the DB membership is tampered with
+                // but the TideCloak JWT doesn't grant the role.
+                if CONFIG.sso_enabled() {
+                    let sso_roles = match SsoUser::find_by_user_uuid(&user.uuid, &conn).await {
+                        Some(sso_user) => match sso_user.sso_access_token {
+                            Some(ref token) => extract_sso_jwt_roles(token),
+                            None => Vec::new(),
+                        },
+                        None => Vec::new(),
+                    };
+                    if !sso_roles.is_empty() && !verify_jwt_org_role(&sso_roles, &org_id, membership_type) {
+                        err_handler!("SSO token does not grant the required organization role")
+                    }
+                }
+
                 Outcome::Success(Self {
                     host: headers.host,
                     device: headers.device,
                     user,
-                    membership_type: {
-                        if let Some(member_type) = MembershipType::from_i32(membership.atype) {
-                            member_type
-                        } else {
-                            // This should only happen if the DB is corrupted
-                            err_handler!("Unknown user type in the database")
-                        }
-                    },
-                    membership_status: {
-                        if let Some(member_status) = MembershipStatus::from_i32(membership.status) {
-                            // NOTE: add additional check for revoked if from_i32 is ever changed
-                            // to return Revoked status.
-                            member_status
-                        } else {
-                            err_handler!("User status is either revoked or invalid.")
-                        }
-                    },
+                    membership_type,
+                    membership_status,
                     membership,
                     ip: headers.ip,
                 })
@@ -1212,7 +1302,6 @@ pub async fn refresh_tokens(
     let refresh_claims = match decode_refresh(refresh_token) {
         Err(err) => {
             error!("Failed to decode {} refresh_token: {refresh_token}: {err:?}", ip.ip);
-            //err_silent!(format!("Impossible to read refresh_token: {}", err.message()))
 
             // If the token failed to decode, it was probably one of the old style tokens that was just a Base64 string.
             // We can generate a claim for them for backwards compatibility. Note that the password refresh claims don't
@@ -1231,7 +1320,10 @@ pub async fn refresh_tokens(
 
     // Get device by refresh token
     let mut device = match Device::find_by_refresh_token(&refresh_claims.device_token, conn).await {
-        None => err!("Invalid refresh token"),
+        None => {
+            debug!("Refresh token not found in DB (expected with SSO-only auth)");
+            err_silent!("Invalid refresh token")
+        },
         Some(device) => device,
     };
 
@@ -1248,7 +1340,7 @@ pub async fn refresh_tokens(
             (AuthTokens::new(&device, &user, refresh_claims.sub, client_id), None)
         }
         AuthMethod::Sso if CONFIG.sso_enabled() => {
-            sso::exchange_refresh_token(&device, &user, client_id, refresh_claims).await?
+            sso::exchange_refresh_token(&device, &user, client_id, refresh_claims, conn).await?
         }
         AuthMethod::Sso => err!("SSO is now disabled, Login again using email and master password"),
         AuthMethod::Password if CONFIG.sso_enabled() && CONFIG.sso_only() => err!("SSO is now required, Login again"),

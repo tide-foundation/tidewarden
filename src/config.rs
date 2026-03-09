@@ -849,6 +849,8 @@ make_config! {
         tide_client_origin_auth:        String, true,   option;
         /// Signed Client Origin (Browser Extension) |> HMAC signature for browser extension origin
         tide_client_origin_auth_browser: String, true,  option;
+        /// Organization ID |> The organization UUID that TideCloak manages roles for. When set, TideCloak client/realm roles are synced to Membership and CollectionUser on login and token refresh.
+        tide_org_id:                    String, true,   option;
     },
 
     /// Yubikey settings

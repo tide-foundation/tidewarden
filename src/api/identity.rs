@@ -144,7 +144,10 @@ async fn _refresh_login(data: ConnectData, conn: &DbConn, ip: &ClientIp) -> Json
     // let members = Membership::find_confirmed_by_user(&user.uuid, conn).await;
     match auth::refresh_tokens(ip, &refresh_token, data.client_id, conn).await {
         Err(err) => {
-            err_code!(format!("Unable to refresh login credentials: {}", err.message()), Status::Unauthorized.code)
+            {
+                debug!("Unable to refresh login credentials: {}", err.message());
+                return Err(crate::error::Error::new_msg(format!("Unable to refresh login credentials: {}", err.message())).with_code(Status::Unauthorized.code));
+            }
         }
         Ok((mut device, auth_tokens, doken)) => {
             // Save to update `device.updated_at` to track usage and toggle new status

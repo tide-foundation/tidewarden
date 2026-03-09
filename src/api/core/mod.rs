@@ -6,6 +6,7 @@ mod folders;
 mod organizations;
 mod public;
 mod sends;
+pub mod tide;
 pub mod two_factor;
 
 pub use accounts::purge_auth_requests;
@@ -29,6 +30,7 @@ pub fn routes() -> Vec<Route> {
     routes.append(&mut organizations::routes());
     routes.append(&mut two_factor::routes());
     routes.append(&mut sends::routes());
+    routes.append(&mut tide::routes());
     routes.append(&mut public::routes());
     routes.append(&mut eq_domains_routes);
     routes.append(&mut hibp_routes);
