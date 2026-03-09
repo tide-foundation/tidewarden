@@ -103,8 +103,7 @@ impl Fairing for AppHeaders {
                     frame-src 'self' blob: https://*.duosecurity.com https://*.duofederal.com https://*.tideprotocol.com https://*.dauth.me http://localhost:1001; \
                     worker-src 'self' blob: https://*.tideprotocol.com https://*.dauth.me; \
                     frame-ancestors 'self' \
-                    chrome-extension://nngceckbapebfimnlniiiahkandclblb \
-                    chrome-extension://jbkfoedolllekgbhcbcoahefnbanhhlh \
+                    chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha \
                     moz-extension://* \
                     {allowed_iframe_ancestors}; \
                     img-src 'self' data: \
