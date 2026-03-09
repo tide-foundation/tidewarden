@@ -55,7 +55,7 @@ syslog = "7.0.0"
 macros = { path = "./macros" }
 
 # TideCloak admin API SDK
-tidecloak-rs = { path = "../webbrowser/tide-browser-native/tidecloak-rs", default-features = false }
+tidecloak-rs = { path = "tidecloak-rs", default-features = false }
 
 # Logging
 log = "0.4.29"
