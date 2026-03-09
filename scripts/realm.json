@@ -68,10 +68,14 @@
                 "http://localhost:3000",
                 "http://localhost:3000/*",
                 "http://localhost:3000/silent-check-sso.html",
-                "http://localhost:3000/auth/redirect"
+                "http://localhost:3000/auth/redirect",
+                "http://localhost:1001",
+                "http://localhost:1001/*",
+                "http://localhost:1001/sso-connector.html"
             ],
             "webOrigins": [
-                "http://localhost:3000"
+                "http://localhost:3000",
+                "http://localhost:1001"
             ],
             "standardFlowEnabled": true,
             "implicitFlowEnabled": false,
@@ -182,5 +186,13 @@
             "enabled": false
         }
     ],
+    "browserSecurityHeaders": {
+        "contentSecurityPolicy": "frame-src 'self'; frame-ancestors 'self' http: https:; object-src 'none';",
+        "xContentTypeOptions": "nosniff",
+        "xFrameOptions": "SAMEORIGIN",
+        "xRobotsTag": "none",
+        "xXSSProtection": "1; mode=block",
+        "strictTransportSecurity": "max-age=31536000; includeSubDomains"
+    },
     "keycloakVersion": "26.1.4"
 }
