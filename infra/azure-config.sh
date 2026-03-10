@@ -9,13 +9,15 @@ export LOCATION="${LOCATION:-australiaeast}"
 
 # Derived resource names (override any individually if needed)
 export RESOURCE_GROUP="${RESOURCE_GROUP:-TideWarden}"
-export ACR_NAME="${ACR_NAME:-acr${PROJECT_NAME}${ENVIRONMENT}}"          # must be alphanumeric
 export LOG_ANALYTICS_WORKSPACE="${LOG_ANALYTICS_WORKSPACE:-law-${PROJECT_NAME}-${ENVIRONMENT}}"
 export CONTAINER_ENV_NAME="${CONTAINER_ENV_NAME:-cae-${PROJECT_NAME}-${ENVIRONMENT}}"
 
+# ── Container Image (Docker Hub) ──────────────────────────────────────────
+export DOCKER_IMAGE="${DOCKER_IMAGE:-tideorg/tidewarden}"
+export IMAGE_TAG="${IMAGE_TAG:-latest}"
+
 # ── Container App ─────────────────────────────────────────────────────────
 export TIDEWARDEN_APP_NAME="${TIDEWARDEN_APP_NAME:-ca-${PROJECT_NAME}-${ENVIRONMENT}}"
-export TIDEWARDEN_IMAGE="${TIDEWARDEN_IMAGE:-${ACR_NAME}.azurecr.io/${PROJECT_NAME}:latest}"
 
 export TIDEWARDEN_CPU="${TIDEWARDEN_CPU:-1.0}"
 export TIDEWARDEN_MEMORY="${TIDEWARDEN_MEMORY:-2.0Gi}"
