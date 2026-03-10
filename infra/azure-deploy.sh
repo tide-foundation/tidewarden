@@ -3,13 +3,11 @@ set -euo pipefail
 
 # ============================================================================
 # Azure Deployment Script for TideWarden
-# Builds the Docker image via ACR Tasks (cloud build), then updates the
-# Container App. No local Docker required.
+# Updates the Container App to a new image tag from Docker Hub.
 # Run azure-infra.sh first to provision the infrastructure.
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/azure-config.sh"
 
 # ── Colours / helpers ───────────────────────────────────────────────────────
@@ -20,18 +18,18 @@ warn() { echo -e "${YELLOW}[deploy]${NC} $1"; }
 err()  { echo -e "${RED}[deploy]${NC} $1"; exit 1; }
 
 # ── Parse arguments ────────────────────────────────────────────────────────
-IMAGE_TAG="${1:-latest}"
-TIDEWARDEN_IMAGE="${ACR_NAME}.azurecr.io/${PROJECT_NAME}:${IMAGE_TAG}"
+DEPLOY_TAG="${1:-${IMAGE_TAG}}"
+FULL_IMAGE="${DOCKER_IMAGE}:${DEPLOY_TAG}"
 
 usage() {
     echo "Usage: $0 [IMAGE_TAG]"
     echo ""
-    echo "  IMAGE_TAG   Docker image tag (default: latest)"
+    echo "  IMAGE_TAG   Docker Hub image tag (default: ${IMAGE_TAG})"
     echo ""
     echo "Examples:"
-    echo "  $0              # builds and deploys with :latest tag"
-    echo "  $0 v1.2.3       # builds and deploys with :v1.2.3 tag"
-    echo "  $0 \$(git rev-parse --short HEAD)  # tag with git SHA"
+    echo "  $0              # deploys ${DOCKER_IMAGE}:${IMAGE_TAG}"
+    echo "  $0 v1.2.3       # deploys ${DOCKER_IMAGE}:v1.2.3"
+    echo "  $0 sha-abc1234  # deploys ${DOCKER_IMAGE}:sha-abc1234"
     exit 0
 }
 
@@ -41,76 +39,26 @@ usage() {
 command -v az &>/dev/null || err "Azure CLI (az) is not installed."
 az account show &>/dev/null || err "Not logged in. Run: az login"
 
-# Verify infrastructure exists
-az group show --name "${RESOURCE_GROUP}" &>/dev/null \
-    || err "Resource group '${RESOURCE_GROUP}' not found. Run azure-infra.sh first."
-
-az acr show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" &>/dev/null \
-    || err "ACR '${ACR_NAME}' not found. Run azure-infra.sh first."
-
 az containerapp show --name "${TIDEWARDEN_APP_NAME}" --resource-group "${RESOURCE_GROUP}" &>/dev/null \
     || err "Container App '${TIDEWARDEN_APP_NAME}' not found. Run azure-infra.sh first."
 
 echo ""
 log "Deployment Configuration:"
-log "  Image:          ${TIDEWARDEN_IMAGE}"
+log "  Image:          ${FULL_IMAGE}"
 log "  Resource Group: ${RESOURCE_GROUP}"
 log "  Container App:  ${TIDEWARDEN_APP_NAME}"
 echo ""
 
-# ── 1. Build image via ACR Tasks (cloud build) ─────────────────────────────
-log "Building image via ACR Tasks (cloud build, no local Docker needed)..."
-
-DOCKERFILE="docker/Dockerfile.debian"
-if [[ ! -f "${ROOT_DIR}/${DOCKERFILE}" ]]; then
-    err "Dockerfile not found at ${ROOT_DIR}/${DOCKERFILE}"
-fi
-
-# Run from the project root so az acr build can find the context
-cd "${ROOT_DIR}"
-
-# ACR Tasks' dependency scanner can't parse FROM lines with @sha256 digests.
-# We create a patched copy of the Dockerfile replacing digests with tags,
-# include it in the source archive, and point --file at it.
-PATCHED_DF="Dockerfile.acr"
-sed 's/@sha256:[a-f0-9]\{64\}//g' "${DOCKERFILE}" > "${PATCHED_DF}"
-
-az acr build \
-    --registry "${ACR_NAME}" \
-    --resource-group "${RESOURCE_GROUP}" \
-    --image "${PROJECT_NAME}:${IMAGE_TAG}" \
-    --file "${PATCHED_DF}" \
-    --build-arg DB=postgresql \
-    --build-arg CARGO_PROFILE=release \
-    --platform linux/amd64 \
-    --timeout 7200 \
-    .
-
-rm -f "${PATCHED_DF}"
-
-ok "Image built and pushed: ${TIDEWARDEN_IMAGE}"
-
-# Also tag as latest if a specific tag was given
-if [[ "${IMAGE_TAG}" != "latest" ]]; then
-    az acr import \
-        --name "${ACR_NAME}" \
-        --source "${ACR_NAME}.azurecr.io/${PROJECT_NAME}:${IMAGE_TAG}" \
-        --image "${PROJECT_NAME}:latest" \
-        --force \
-        --output none
-    ok "Also tagged as: ${ACR_NAME}.azurecr.io/${PROJECT_NAME}:latest"
-fi
-
-# ── 2. Update Container App ────────────────────────────────────────────────
-log "Updating Container App with new image..."
+# ── 1. Update Container App ────────────────────────────────────────────────
+log "Updating Container App with image: ${FULL_IMAGE}..."
 az containerapp update \
     --name "${TIDEWARDEN_APP_NAME}" \
     --resource-group "${RESOURCE_GROUP}" \
-    --image "${TIDEWARDEN_IMAGE}" \
+    --image "${FULL_IMAGE}" \
     --output none
 ok "Container App updated"
 
-# ── 3. Wait for deployment ─────────────────────────────────────────────────
+# ── 2. Wait for deployment ─────────────────────────────────────────────────
 log "Waiting for new revision to become active..."
 
 sleep 5
@@ -148,7 +96,7 @@ if [[ ${RETRIES} -ge ${MAX_RETRIES} ]]; then
     warn "  az containerapp revision list --name ${TIDEWARDEN_APP_NAME} --resource-group ${RESOURCE_GROUP}"
 fi
 
-# ── 4. Show deployed URL ───────────────────────────────────────────────────
+# ── 3. Show deployed URL ───────────────────────────────────────────────────
 TIDEWARDEN_FQDN=$(az containerapp show \
     --name "${TIDEWARDEN_APP_NAME}" \
     --resource-group "${RESOURCE_GROUP}" \
@@ -159,7 +107,7 @@ echo "============================================="
 echo "  Deployment Complete"
 echo "============================================="
 echo ""
-echo "  Image:    ${TIDEWARDEN_IMAGE}"
+echo "  Image:    ${FULL_IMAGE}"
 echo "  Revision: ${LATEST_REVISION}"
 echo "  URL:      https://${TIDEWARDEN_FQDN}"
 echo ""
