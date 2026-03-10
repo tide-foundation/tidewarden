@@ -6,6 +6,7 @@
 !docker/healthcheck.sh
 !docker/start.sh
 !macros
+!tidecloak-rs
 !migrations
 !src
 
