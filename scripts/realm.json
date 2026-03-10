@@ -49,12 +49,15 @@
                 "http://localhost:3000/*",
                 "http://localhost:3000/silent-check-sso.html",
                 "http://localhost:3000/auth/redirect",
+                "https://995a9b68-11e3-4ede-b4b9-997c9b34dcd0.allizom.org/*",
+                "https://995a9b68-11e3-4ede-b4b9-997c9b34dcd0.allizom.org",
                 "chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha/*",
                 "chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha"
             ],
             "webOrigins": [
                 "http://localhost:3000",
-                "chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha"
+                "chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha",
+                "https://995a9b68-11e3-4ede-b4b9-997c9b34dcd0.allizom.org"
             ],
             "standardFlowEnabled": true,
             "implicitFlowEnabled": false,
