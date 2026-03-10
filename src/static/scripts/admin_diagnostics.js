@@ -251,7 +251,7 @@ function checkSecurityHeaders(headers, omit) {
             "style-src 'self' 'unsafe-inline'",
             "child-src 'self' https://*.duosecurity.com https://*.duofederal.com",
             "frame-src 'self' https://*.duosecurity.com https://*.duofederal.com",
-            "frame-ancestors 'self' chrome-extension://nngceckbapebfimnlniiiahkandclblb chrome-extension://jbkfoedolllekgbhcbcoahefnbanhhlh moz-extension://*",
+            "frame-ancestors 'self' chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha moz-extension://*",
             "img-src 'self' data: https://haveibeenpwned.com",
             "connect-src 'self' https://api.pwnedpasswords.com https://api.2fa.directory https://app.simplelogin.io/api/ https://app.addy.io/api/ https://api.fastmail.com/ https://api.forwardemail.net",
         ]

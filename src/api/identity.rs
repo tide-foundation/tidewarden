@@ -539,8 +539,11 @@ async fn authenticated_response(
             "SignedClientOrigin": CONFIG.tide_client_origin_auth(),
             "EncryptedUserKey": encrypted_user_key
         });
-        if let Some(browser_auth) = CONFIG.tide_client_origin_auth_browser() {
-            tide_json["SignedClientOriginBrowser"] = Value::String(browser_auth);
+        if let Some(chrome_auth) = CONFIG.tide_client_origin_auth_chrome() {
+            tide_json["SignedClientOriginChrome"] = Value::String(chrome_auth);
+        }
+        if let Some(firefox_auth) = CONFIG.tide_client_origin_auth_firefox() {
+            tide_json["SignedClientOriginFirefox"] = Value::String(firefox_auth);
         }
         tide_json
     } else {

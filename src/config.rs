@@ -847,8 +847,10 @@ make_config! {
         tide_realm:                     String, true,   def,    String::new();
         /// Signed Client Origin |> Read from tidecloak.json client-origin-auth-{DOMAIN} field
         tide_client_origin_auth:        String, true,   option;
-        /// Signed Client Origin (Browser Extension) |> HMAC signature for browser extension origin
-        tide_client_origin_auth_browser: String, true,  option;
+        /// Signed Client Origin (Chrome Extension) |> Origin auth for chrome-extension://
+        tide_client_origin_auth_chrome: String, true,  option;
+        /// Signed Client Origin (Firefox Extension) |> Origin auth for moz-extension://
+        tide_client_origin_auth_firefox: String, true, option;
         /// Organization ID |> The organization UUID that TideCloak manages roles for. When set, TideCloak client/realm roles are synced to Membership and CollectionUser on login and token refresh.
         tide_org_id:                    String, true,   option;
     },
@@ -1556,16 +1558,26 @@ fn load_tidecloak_config(builder: &mut ConfigBuilder) {
         }
     }
 
-    // Look up client-origin-auth for browser extension (chrome-extension://...)
+    // Look up client-origin-auth for browser extensions
     if let Some(obj) = json.as_object() {
+        for (key, _value) in obj {
+            if key.starts_with("client-origin-auth-") {
+                println!("[TIDECLOAK] Found origin auth key: {}", key);
+            }
+        }
         for (key, value) in obj {
-            if key.starts_with("client-origin-auth-chrome-extension://") {
-                if let Some(v) = value.as_str() {
-                    builder.tide_client_origin_auth_browser = Some(v.to_string());
-                    break;
+            if let Some(v) = value.as_str() {
+                if key.starts_with("client-origin-auth-chrome-extension://") {
+                    println!("[TIDECLOAK] Using Chrome extension origin auth");
+                    builder.tide_client_origin_auth_chrome = Some(v.to_string());
+                } else if key.starts_with("client-origin-auth-moz-extension://") {
+                    println!("[TIDECLOAK] Using Firefox extension origin auth");
+                    builder.tide_client_origin_auth_firefox = Some(v.to_string());
                 }
             }
         }
+    } else {
+        println!("[TIDECLOAK] WARNING: json.as_object() returned None");
     }
 }
 

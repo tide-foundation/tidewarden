@@ -8,10 +8,6 @@
     "roles": {
         "realm": [
             {
-                "name": "appUser",
-                "description": "Standard application user"
-            },
-            {
                 "name": "_tide_enabled",
                 "description": "Represents a tide user thats allowed perform actions on tide"
             },
@@ -31,28 +27,12 @@
                     "realm": [
                         "_tide_enabled",
                         "_tide_vaultwarden.selfdecrypt",
-                        "_tide_vaultwarden.selfencrypt",
-                        "appUser"
+                        "_tide_vaultwarden.selfencrypt"
                     ]
                 }
             }
         ],
-        "client": {
-            "tidewarden": [
-                {
-                    "name": "admin",
-                    "description": "can see all collections without explicit assignment"
-                },
-                {
-                    "name": "owner",
-                    "description": "Full control over everything"
-                },
-                {
-                    "name": "Manager",
-                    "description": "Standard application user"
-                }
-            ]
-        }
+        "client": {}
     },
     "defaultRole": {
         "name": "default-roles-tidewarden",
@@ -68,10 +48,13 @@
                 "http://localhost:3000",
                 "http://localhost:3000/*",
                 "http://localhost:3000/silent-check-sso.html",
-                "http://localhost:3000/auth/redirect"
+                "http://localhost:3000/auth/redirect",
+                "chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha/*",
+                "chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha"
             ],
             "webOrigins": [
-                "http://localhost:3000"
+                "http://localhost:3000",
+                "chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha"
             ],
             "standardFlowEnabled": true,
             "implicitFlowEnabled": false,
@@ -182,5 +165,13 @@
             "enabled": false
         }
     ],
+    "browserSecurityHeaders": {
+        "contentSecurityPolicy": "frame-src 'self'; frame-ancestors 'self' http: https:; object-src 'none';",
+        "xContentTypeOptions": "nosniff",
+        "xFrameOptions": "SAMEORIGIN",
+        "xRobotsTag": "none",
+        "xXSSProtection": "1; mode=block",
+        "strictTransportSecurity": "max-age=31536000; includeSubDomains"
+    },
     "keycloakVersion": "26.1.4"
 }

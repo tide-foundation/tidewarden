@@ -197,8 +197,11 @@ async fn sync(data: SyncData, headers: Headers, client_version: Option<ClientVer
             "signedClientOrigin": CONFIG.tide_client_origin_auth(),
             "encryptedUserKey": encrypted_user_key
         });
-        if let Some(browser_auth) = CONFIG.tide_client_origin_auth_browser() {
-            tide_json["signedClientOriginBrowser"] = Value::String(browser_auth);
+        if let Some(chrome_auth) = CONFIG.tide_client_origin_auth_chrome() {
+            tide_json["signedClientOriginChrome"] = Value::String(chrome_auth);
+        }
+        if let Some(firefox_auth) = CONFIG.tide_client_origin_auth_firefox() {
+            tide_json["signedClientOriginFirefox"] = Value::String(firefox_auth);
         }
         tide_json
     } else {
