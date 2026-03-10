@@ -8,10 +8,6 @@
     "roles": {
         "realm": [
             {
-                "name": "appUser",
-                "description": "Standard application user"
-            },
-            {
                 "name": "_tide_enabled",
                 "description": "Represents a tide user thats allowed perform actions on tide"
             },
@@ -31,28 +27,12 @@
                     "realm": [
                         "_tide_enabled",
                         "_tide_vaultwarden.selfdecrypt",
-                        "_tide_vaultwarden.selfencrypt",
-                        "appUser"
+                        "_tide_vaultwarden.selfencrypt"
                     ]
                 }
             }
         ],
-        "client": {
-            "tidewarden": [
-                {
-                    "name": "admin",
-                    "description": "can see all collections without explicit assignment"
-                },
-                {
-                    "name": "owner",
-                    "description": "Full control over everything"
-                },
-                {
-                    "name": "Manager",
-                    "description": "Standard application user"
-                }
-            ]
-        }
+        "client": {}
     },
     "defaultRole": {
         "name": "default-roles-tidewarden",
@@ -69,13 +49,12 @@
                 "http://localhost:3000/*",
                 "http://localhost:3000/silent-check-sso.html",
                 "http://localhost:3000/auth/redirect",
-                "http://localhost:1001",
-                "http://localhost:1001/*",
-                "http://localhost:1001/sso-connector.html"
+                "chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha/*",
+                "chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha"
             ],
             "webOrigins": [
                 "http://localhost:3000",
-                "http://localhost:1001"
+                "chrome-extension://dkkppmloajmghfcfgnlafdajipgahpha"
             ],
             "standardFlowEnabled": true,
             "implicitFlowEnabled": false,
