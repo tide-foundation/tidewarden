@@ -863,7 +863,7 @@ async fn build_admin_client(
 async fn get_tidecloak_client_uuid_ac(ac: &AdminClient) -> Result<String, Error> {
     let client_id = crate::CONFIG.sso_client_id();
     ac.find_client_uuid(&client_id).await
-        .map_err(|e| Error::new("TideCloak client lookup failed", &e.to_string()))
+        .map_err(|e| { let d = e.to_string(); error!("[Tide] client lookup failed: {d}"); Error::new(format!("TideCloak client lookup failed: {d}"), &d) })
 }
 
 /// Ensure a client role exists, creating it if needed. Returns the full role object.
@@ -1412,7 +1412,7 @@ async fn get_tide_link_url(
         lifespan,
         &["link-tide-account-action"],
     ).await
-        .map_err(|e| Error::new("TideCloak link API error", &e.to_string()))?;
+        .map_err(|e| { let d = e.to_string(); error!("[Tide] link API error: {d}"); Error::new(format!("TideCloak link API error: {d}"), &d) })?;
 
     Ok(Json(json!(link_url)))
 }
@@ -2465,7 +2465,11 @@ async fn commit_change_request(
 
     info!("[Tide] commit: forwarding body={body}");
     let body = ac.tide_commit_change_request(&body).await
-        .map_err(|e| Error::new("TideCloak commit failed", &e.to_string()))?;
+        .map_err(|e| {
+            let detail = e.to_string();
+            error!("[Tide] commit failed: {detail}");
+            Error::new(format!("TideCloak commit failed: {detail}"), &detail)
+        })?;
     Ok(Json(body))
 }
 
@@ -2491,7 +2495,7 @@ async fn cancel_change_request(
     }
 
     let body = ac.tide_cancel_change_request(&body).await
-        .map_err(|e| Error::new("TideCloak cancel failed", &e.to_string()))?;
+        .map_err(|e| { let d = e.to_string(); error!("[Tide] cancel failed: {d}"); Error::new(format!("TideCloak cancel failed: {d}"), &d) })?;
     Ok(Json(body))
 }
 
@@ -2534,7 +2538,7 @@ async fn add_review_change_request(
     }
 
     let text = ac.tide_add_review(&form_params).await
-        .map_err(|e| Error::new("TideCloak add-review failed", &e.to_string()))?;
+        .map_err(|e| { let d = e.to_string(); error!("[Tide] add-review failed: {d}"); Error::new(format!("TideCloak add-review failed: {d}"), &d) })?;
     Ok(Json(json!({ "message": text })))
 }
 
@@ -2564,7 +2568,7 @@ async fn add_rejection_change_request(
     ];
 
     let text = ac.tide_add_rejection(&form_params).await
-        .map_err(|e| Error::new("TideCloak add-rejection failed", &e.to_string()))?;
+        .map_err(|e| { let d = e.to_string(); error!("[Tide] add-rejection failed: {d}"); Error::new(format!("TideCloak add-rejection failed: {d}"), &d) })?;
     Ok(Json(json!({ "message": text })))
 }
 
