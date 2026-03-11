@@ -11,12 +11,12 @@
 
 ####################### WEB VAULT BUILD #######################
 # Build the custom TideWarden web vault from the clients submodule
-FROM --platform=linux/amd64 docker.io/library/node:20-alpine AS vault
+FROM --platform=linux/amd64 docker.io/library/node:22-alpine AS vault
 
 WORKDIR /clients
 COPY ./clients/package*.json ./
 COPY ./clients/ .
-RUN npm ci
+RUN npm install
 
 # Patch @tidecloak/js — it re-exports symbols from heimdall-tide that don't exist yet
 # (TideMemory, BaseTideRequest, Policy, PolicyParameters). Rewrite the broken export lines.
