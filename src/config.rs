@@ -1106,19 +1106,6 @@ fn validate_config(cfg: &ConfigItems) -> Result<(), Error> {
         err!("All Duo options need to be set for global Duo support")
     }
 
-    if cfg.sso_enabled {
-        if cfg.sso_client_id.is_empty() || cfg.sso_authority.is_empty() {
-            err!("`SSO_CLIENT_ID` and `SSO_AUTHORITY` must be set for SSO support")
-        }
-        if !cfg.tide_enabled && cfg.sso_client_secret.is_empty() {
-            err!("`SSO_CLIENT_SECRET` must be set for SSO support (not required when TideCloak is enabled)")
-        }
-
-        validate_internal_sso_issuer_url(&cfg.sso_authority)?;
-        validate_internal_sso_redirect_url(&cfg.sso_callback_path)?;
-        validate_sso_master_password_policy(&cfg.sso_master_password_policy)?;
-    }
-
     if cfg._enable_yubico {
         if cfg.yubico_client_id.is_some() != cfg.yubico_secret_key.is_some() {
             err!("Both `YUBICO_CLIENT_ID` and `YUBICO_SECRET_KEY` must be set for Yubikey OTP support")
