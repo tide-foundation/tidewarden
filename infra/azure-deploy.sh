@@ -50,11 +50,13 @@ log "  Container App:  ${TIDEWARDEN_APP_NAME}"
 echo ""
 
 # ── 1. Update Container App ────────────────────────────────────────────────
-log "Updating Container App with image: ${FULL_IMAGE}..."
+REVISION_SUFFIX="deploy-$(date +%s)"
+log "Updating Container App with image: ${FULL_IMAGE} (revision: ${REVISION_SUFFIX})..."
 az containerapp update \
     --name "${TIDEWARDEN_APP_NAME}" \
     --resource-group "${RESOURCE_GROUP}" \
     --image "${FULL_IMAGE}" \
+    --revision-suffix "${REVISION_SUFFIX}" \
     --output none
 ok "Container App updated"
 
@@ -66,7 +68,7 @@ sleep 5
 LATEST_REVISION=$(az containerapp revision list \
     --name "${TIDEWARDEN_APP_NAME}" \
     --resource-group "${RESOURCE_GROUP}" \
-    --query "[0].name" -o tsv)
+    --query "sort_by(@, &properties.createdTime)[-1].name" -o tsv)
 
 RETRIES=0
 MAX_RETRIES=30

@@ -18,6 +18,7 @@ export IMAGE_TAG="${IMAGE_TAG:-latest}"
 
 # ── Container App ─────────────────────────────────────────────────────────
 export TIDEWARDEN_APP_NAME="${TIDEWARDEN_APP_NAME:-ca-${PROJECT_NAME}-${ENVIRONMENT}}"
+export TIDEWARDEN_DOMAIN="${TIDEWARDEN_DOMAIN:-https://tidewarden.tide.org}"
 
 export TIDEWARDEN_CPU="${TIDEWARDEN_CPU:-1.0}"
 export TIDEWARDEN_MEMORY="${TIDEWARDEN_MEMORY:-2.0Gi}"
@@ -33,6 +34,11 @@ export PG_SKU="${PG_SKU:-Standard_B1ms}"
 export PG_STORAGE_SIZE="${PG_STORAGE_SIZE:-32}"      # GiB
 export PG_VERSION="${PG_VERSION:-16}"
 export PG_DB_NAME="${PG_DB_NAME:-tidewarden}"
+
+# ── Persistent Storage (Azure File Share for /data) ──────────────────────
+export STORAGE_ACCOUNT_NAME="${STORAGE_ACCOUNT_NAME:-sttidewarden}"
+export STORAGE_SHARE_NAME="${STORAGE_SHARE_NAME:-tidewarden-data}"
+export STORAGE_MOUNT_NAME="${STORAGE_MOUNT_NAME:-tidewardendata}"
 
 # ── External TideCloak ─────────────────────────────────────────────────────
 # TideCloak is hosted externally. Set this to your existing instance URL.

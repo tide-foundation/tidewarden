@@ -74,7 +74,7 @@ pub struct Invitation {
     pub email: String,
 }
 
-#[derive(Identifiable, Queryable, Insertable, Selectable)]
+#[derive(Identifiable, Queryable, Insertable, Selectable, AsChangeset)]
 #[diesel(table_name = sso_users)]
 #[diesel(primary_key(user_uuid))]
 pub struct SsoUser {
@@ -523,6 +523,9 @@ impl SsoUser {
             postgresql {
                 diesel::insert_into(sso_users::table)
                     .values(self)
+                    .on_conflict(sso_users::user_uuid)
+                    .do_update()
+                    .set(self)
                     .execute(conn)
                     .map_res("Error saving SSO user")
             }

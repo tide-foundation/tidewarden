@@ -7,6 +7,7 @@
 !docker/start.sh
 !macros
 !tidecloak-rs
+!clients
 !migrations
 !src
 

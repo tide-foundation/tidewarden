@@ -130,7 +130,43 @@ PG_FQDN=$(az postgres flexible-server show \
 
 DATABASE_URL="postgresql://${PG_ADMIN_USER}:${PG_ADMIN_PASSWORD}@${PG_FQDN}:5432/${PG_DB_NAME}?sslmode=require"
 
-# ── 5. TideWarden Container App ────────────────────────────────────────────
+# ── 5. Azure Storage Account + File Share (persistent /data) ─────────────
+log "Creating Storage Account..."
+az storage account create \
+    --name "${STORAGE_ACCOUNT_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --location "${LOCATION}" \
+    --sku Standard_LRS \
+    --output none
+ok "Storage Account: ${STORAGE_ACCOUNT_NAME}"
+
+STORAGE_KEY=$(az storage account keys list \
+    --resource-group "${RESOURCE_GROUP}" \
+    --account-name "${STORAGE_ACCOUNT_NAME}" \
+    --query "[0].value" -o tsv)
+
+log "Creating File Share..."
+az storage share-rm create \
+    --storage-account "${STORAGE_ACCOUNT_NAME}" \
+    --name "${STORAGE_SHARE_NAME}" \
+    --quota 1 \
+    --output none
+ok "File Share: ${STORAGE_SHARE_NAME}"
+
+# Add storage to Container Apps Environment
+log "Adding storage to Container Apps Environment..."
+az containerapp env storage set \
+    --name "${CONTAINER_ENV_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --storage-name "${STORAGE_MOUNT_NAME}" \
+    --azure-file-account-name "${STORAGE_ACCOUNT_NAME}" \
+    --azure-file-account-key "${STORAGE_KEY}" \
+    --azure-file-share-name "${STORAGE_SHARE_NAME}" \
+    --access-mode ReadWrite \
+    --output none
+ok "Storage mounted in environment"
+
+# ── 6. TideWarden Container App ────────────────────────────────────────────
 log "Creating TideWarden Container App..."
 
 # Get the Container Apps Environment default domain
@@ -160,10 +196,41 @@ az containerapp create \
         "SSO_ONLY=true" \
         "SSO_PKCE=true" \
         "TIDECLOAK_LOCAL_URL=${TIDECLOAK_URL}" \
-        "DOMAIN=https://${TIDEWARDEN_APP_NAME}.${CAE_DOMAIN}" \
+        "DOMAIN=${TIDEWARDEN_DOMAIN}" \
         "SIGNUPS_ALLOWED=true" \
         "LOG_LEVEL=info" \
     --output none
+
+# Mount persistent storage at /data
+log "Attaching persistent volume at /data..."
+YAML_FILE=$(mktemp)
+az containerapp show \
+    --name "${TIDEWARDEN_APP_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    -o yaml > "${YAML_FILE}"
+
+# Patch the YAML to add volume and volumeMount
+python -c "
+import yaml, sys
+with open('${YAML_FILE}') as f:
+    doc = yaml.safe_load(f)
+tpl = doc['properties']['template']
+tpl['volumes'] = [{'name': '${STORAGE_MOUNT_NAME}', 'storageName': '${STORAGE_MOUNT_NAME}', 'storageType': 'AzureFile'}]
+tpl['containers'][0]['volumeMounts'] = [{'volumeName': '${STORAGE_MOUNT_NAME}', 'mountPath': '/data'}]
+with open('${YAML_FILE}', 'w') as f:
+    yaml.dump(doc, f, default_flow_style=False)
+" 2>/dev/null || {
+    # Fallback if python3/pyyaml not available: use sed-based approach
+    warn "python3 not available, using az CLI to add volume mount..."
+}
+
+az containerapp update \
+    --name "${TIDEWARDEN_APP_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --yaml "${YAML_FILE}" \
+    --output none
+rm -f "${YAML_FILE}"
+ok "Persistent volume mounted at /data"
 
 TIDEWARDEN_FQDN=$(az containerapp show \
     --name "${TIDEWARDEN_APP_NAME}" \

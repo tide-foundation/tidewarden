@@ -9,25 +9,30 @@
 # 	https://docs.docker.com/develop/develop-images/multistage-build/
 # 	https://whitfin.io/speeding-up-rust-docker-builds/
 
-####################### VAULT BUILD IMAGE #######################
-# The web-vault digest specifies a particular web-vault build on Docker Hub.
-# Using the digest instead of the tag name provides better security,
-# as the digest of an image is immutable, whereas a tag name can later
-# be changed to point to a malicious image.
-#
-# To verify the current digest for a given tag name:
-# - From https://hub.docker.com/r/vaultwarden/web-vault/tags,
-#   click the tag name to view the digest of the image it currently points to.
-# - From the command line:
-#     $ docker pull docker.io/vaultwarden/web-vault:v2026.1.1
-#     $ docker image inspect --format "{{.RepoDigests}}" docker.io/vaultwarden/web-vault:v2026.1.1
-#     [docker.io/vaultwarden/web-vault@sha256:062fcf0d5dc37247dae61b0ee1ba5d20f9296e290d7ad1f6114ea5888f5738a7]
-#
-# - Conversely, to get the tag name from the digest:
-#     $ docker image inspect --format "{{.RepoTags}}" docker.io/vaultwarden/web-vault@sha256:062fcf0d5dc37247dae61b0ee1ba5d20f9296e290d7ad1f6114ea5888f5738a7
-#     [docker.io/vaultwarden/web-vault:v2026.1.1]
-#
-FROM --platform=linux/amd64 docker.io/vaultwarden/web-vault@sha256:062fcf0d5dc37247dae61b0ee1ba5d20f9296e290d7ad1f6114ea5888f5738a7 AS vault
+####################### WEB VAULT BUILD #######################
+# Build the custom TideWarden web vault from the clients submodule
+FROM --platform=linux/amd64 docker.io/library/node:20-alpine AS vault
+
+WORKDIR /clients
+COPY ./clients/package*.json ./
+COPY ./clients/ .
+RUN npm ci
+
+# Patch @tidecloak/js — it re-exports symbols from heimdall-tide that don't exist yet
+# (TideMemory, BaseTideRequest, Policy, PolicyParameters). Rewrite the broken export lines.
+RUN for variant in esm cjs; do \
+      # tidecloak.js: replace the combined export line with only valid exports
+      sed -i 's/export { RequestEnclave, ApprovalEnclave, ApprovalEnclaveNew, TideMemory, BaseTideRequest, PolicySignRequest, Policy, PolicyParameters } from "heimdall-tide"/export { RequestEnclave, ApprovalEnclave, ApprovalEnclaveNew, PolicySignRequest } from "heimdall-tide"/' \
+        "node_modules/@tidecloak/js/dist/${variant}/lib/tidecloak.js" 2>/dev/null; \
+      # index.js: remove the line that re-exports TideMemory/BaseTideRequest from heimdall-tide
+      sed -i '/export.*TideMemory.*BaseTideRequest.*from.*heimdall-tide/d' \
+        "node_modules/@tidecloak/js/dist/${variant}/src/index.js" 2>/dev/null; \
+    done && echo "Patched @tidecloak/js broken heimdall-tide re-exports"
+
+WORKDIR /clients/apps/web
+ARG VAULT_NPM_COMMAND=build:oss
+RUN npm run ${VAULT_NPM_COMMAND}
+# Output is in /clients/apps/web/build
 
 ########################## Cross Compile Docker Helper Scripts ##########################
 ## We use the linux/amd64 no matter which Build Platform, since these are all bash scripts
@@ -190,7 +195,7 @@ WORKDIR /
 
 COPY docker/healthcheck.sh docker/start.sh /
 
-COPY --from=vault /web-vault ./web-vault
+COPY --from=vault /clients/apps/web/build ./web-vault
 COPY --from=build /app/target/final/vaultwarden .
 
 HEALTHCHECK --interval=60s --timeout=10s CMD ["/healthcheck.sh"]
