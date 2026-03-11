@@ -635,6 +635,7 @@ async fn revoke_policy_decision(
 struct CommitData {
     signed_policy_data: Option<String>,
     signed_policy_signature: Option<String>,
+    doken: Option<String>,
 }
 
 #[post("/organizations/<org_id>/tide/policy-approvals/<approval_id>/commit", data = "<data>")]
@@ -685,6 +686,12 @@ async fn commit_policy(
             info!("[Tide] Including initCertSig ({} chars) for role {}", sig.len(), approval.role_id);
         } else {
             warn!("[Tide] No initCertSig provided for role {} — ORK policy verification may fail", approval.role_id);
+        }
+        if let Some(ref doken) = data.doken {
+            body["doken"] = json!(doken);
+            info!("[Tide] Including doken ({} chars) for role {}", doken.len(), approval.role_id);
+        } else {
+            warn!("[Tide] No doken provided for role {} — ORK authorization may fail", approval.role_id);
         }
         match ac.tide_set_role_init_cert(&role_id_for_api, &body).await {
             Ok(_) => info!("[Tide] Stored policy initCert + initCertSig on TideCloak for role {}", approval.role_id),
