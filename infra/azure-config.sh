@@ -42,4 +42,4 @@ export STORAGE_MOUNT_NAME="${STORAGE_MOUNT_NAME:-tidewardendata}"
 
 # ── External TideCloak ─────────────────────────────────────────────────────
 # TideCloak is hosted externally. Set this to your existing instance URL.
-export TIDECLOAK_URL="${TIDECLOAK_URL:-https://staging.dauth.me}"
+export TIDECLOAK_URL="${TIDECLOAK_URL:-https://login.dauth.me}"
