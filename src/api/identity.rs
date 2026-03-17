@@ -313,15 +313,22 @@ async fn _sso_login(
     // Extract the doken, id_token, and SSO session ID before redeem consumes user_infos
     let doken = user_infos.doken.clone();
     let sso_id_token = user_infos.id_token.clone();
+    let sso_access_token = user_infos.access_token.clone();
     // Extract sid from the SSO access token for the voucher URL
     let sso_session_id = if CONFIG.tide_enabled() {
-        sso::extract_session_id(&user_infos.access_token)
+        sso::extract_session_id(&sso_access_token)
     } else {
         None
     };
 
     // We passed 2FA get auth tokens
     let auth_tokens = sso::redeem(&device, &user, data.client_id, sso_user, sso_auth, user_infos, conn).await?;
+
+    // Bidirectional sync: create/update DB memberships from JWT org roles,
+    // and sync DB-only memberships back to TideCloak.
+    if CONFIG.sso_enabled() && CONFIG.tide_enabled() {
+        crate::api::core::tide::sync_memberships_from_sso_roles(&user.uuid, &sso_access_token, conn).await;
+    }
 
     authenticated_response(&user, &mut device, auth_tokens, twofactor_token, doken, sso_id_token, sso_session_id, conn, ip).await
 }

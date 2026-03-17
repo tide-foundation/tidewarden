@@ -512,7 +512,7 @@ use crate::db::{
 
 /// Extract TideCloak client roles from an SSO access token JWT (base64 decode only, no signature check).
 /// Returns the list of role strings from `resource_access.tidewarden.roles`, or an empty vec.
-fn extract_sso_jwt_roles(token: &str) -> Vec<String> {
+pub fn extract_sso_jwt_roles(token: &str) -> Vec<String> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() < 2 {
         return Vec::new();

@@ -11,7 +11,7 @@ use crate::{
     db::{
         models::{
             AccessMetadata, AccessMetadataId, Collection, CollectionUser,
-            Membership, MembershipStatus, MembershipType, OrganizationId, PolicyApproval,
+            Membership, MembershipStatus, MembershipType, Organization, OrganizationId, PolicyApproval,
             PolicyApprovalId, PolicyLog, PolicyTemplate, PolicyTemplateId, RolePolicy, User,
         },
         DbConn,
@@ -1961,6 +1961,149 @@ pub async fn sync_membership_to_tidecloak_with_actor(
 
     info!("[Tide] Synced org membership to TideCloak: user={tc_user_id}, org={org_id}, roles={:?}", role_names);
     Ok(())
+}
+
+// ---------- Reverse Sync: TideCloak JWT Roles → DB Memberships ----------
+
+/// Map a TideCloak role suffix back to a MembershipType integer.
+fn role_suffix_to_membership_type(suffix: &str) -> Option<i32> {
+    match suffix {
+        "owner" => Some(MembershipType::Owner as i32),
+        "admin" => Some(MembershipType::Admin as i32),
+        "user" => Some(MembershipType::User as i32),
+        "manager" => Some(MembershipType::Manager as i32),
+        _ => None,
+    }
+}
+
+/// Parse org roles from SSO JWT and return a map of org_id → membership_type.
+/// Roles are expected in the format `org:{uuid}:{owner|admin|user|manager}`.
+/// If multiple roles exist for the same org, the highest privilege wins.
+fn parse_org_roles_from_jwt(sso_roles: &[String]) -> std::collections::HashMap<String, i32> {
+    use std::collections::HashMap;
+    let mut org_map: HashMap<String, i32> = HashMap::new();
+
+    for role in sso_roles {
+        // Expected format: org:{uuid}:{suffix}
+        let parts: Vec<&str> = role.splitn(3, ':').collect();
+        if parts.len() != 3 || parts[0] != "org" {
+            continue;
+        }
+        let org_id = parts[1];
+        let suffix = parts[2];
+
+        // Skip non-membership roles (accessAll, perm:*, etc.)
+        let Some(atype) = role_suffix_to_membership_type(suffix) else {
+            continue;
+        };
+
+        // Keep the highest privilege (lowest integer) for each org
+        org_map
+            .entry(org_id.to_string())
+            .and_modify(|existing| {
+                if atype < *existing {
+                    *existing = atype;
+                }
+            })
+            .or_insert(atype);
+    }
+
+    org_map
+}
+
+/// Sync DB memberships from SSO JWT roles on login.
+///
+/// For each `org:{uuid}:{role}` in the JWT:
+///   - If no DB membership exists, create one (status = Accepted, empty akey — needs admin confirm for org key).
+///   - If a DB membership exists with a different role, update it to match the JWT.
+///
+/// For each existing DB membership whose org is NOT in the JWT roles:
+///   - Sync the DB membership TO TideCloak (DB is authoritative for memberships not managed via KC).
+///
+/// This ensures bidirectional sync: roles added in Keycloak create DB memberships,
+/// and memberships created in the app sync to Keycloak.
+pub async fn sync_memberships_from_sso_roles(
+    user_uuid: &crate::db::models::UserId,
+    sso_access_token: &str,
+    conn: &DbConn,
+) {
+    use crate::auth::extract_sso_jwt_roles;
+
+    let sso_roles = extract_sso_jwt_roles(sso_access_token);
+    if sso_roles.is_empty() {
+        return;
+    }
+
+    let jwt_org_map = parse_org_roles_from_jwt(&sso_roles);
+    if jwt_org_map.is_empty() {
+        return;
+    }
+
+    // Get all existing DB memberships for this user
+    let existing_memberships = Membership::find_by_user(user_uuid, conn).await;
+
+    // Phase 1: JWT → DB (create or update memberships from Keycloak roles)
+    for (org_id_str, jwt_atype) in &jwt_org_map {
+        let org_id: OrganizationId = org_id_str.clone().into();
+
+        // Check if the organization actually exists in our DB
+        if Organization::find_by_uuid(&org_id, conn).await.is_none() {
+            warn!("[Tide] Reverse sync: org {org_id} from JWT role does not exist in DB, skipping");
+            continue;
+        }
+
+        match existing_memberships.iter().find(|m| m.org_uuid == org_id) {
+            Some(existing) => {
+                // Membership exists — update role if it changed
+                if existing.atype != *jwt_atype {
+                    let old_suffix = membership_type_to_suffix(existing.atype);
+                    let new_suffix = membership_type_to_suffix(*jwt_atype);
+                    info!(
+                        "[Tide] Reverse sync: updating membership for user={user_uuid} org={org_id}: {old_suffix} → {new_suffix}"
+                    );
+                    // Re-fetch for mutation (Membership doesn't impl Clone)
+                    if let Some(mut updated) = Membership::find_by_user_and_org(user_uuid, &org_id, conn).await {
+                        updated.atype = *jwt_atype;
+                        if let Err(e) = updated.save(conn).await {
+                            error!("[Tide] Reverse sync: failed to update membership: {e}");
+                        }
+                    }
+                }
+            }
+            None => {
+                // No membership in DB — create one from JWT role
+                let suffix = membership_type_to_suffix(*jwt_atype);
+                info!(
+                    "[Tide] Reverse sync: creating membership for user={user_uuid} org={org_id} role={suffix}"
+                );
+                let mut member = Membership::new(user_uuid.clone(), org_id.clone(), None);
+                member.atype = *jwt_atype;
+                member.status = MembershipStatus::Accepted as i32;
+                // akey is empty — the user will need to get the org key from an admin
+                // (standard flow: admin confirms → org key is shared)
+                if let Err(e) = member.save(conn).await {
+                    error!("[Tide] Reverse sync: failed to create membership: {e}");
+                }
+            }
+        }
+    }
+
+    // Phase 2: DB → Keycloak (sync memberships that exist in DB but NOT in JWT)
+    for membership in &existing_memberships {
+        let org_id_str = membership.org_uuid.to_string();
+        if !jwt_org_map.contains_key(&org_id_str) {
+            // This membership exists in DB but not in the JWT — sync it TO Keycloak
+            if let Err(e) = sync_membership_to_tidecloak(
+                user_uuid,
+                &membership.org_uuid,
+                membership.atype,
+                membership.access_all,
+                conn,
+            ).await {
+                warn!("[Tide] Reverse sync: failed to sync DB membership to TideCloak for org={}: {e}", membership.org_uuid);
+            }
+        }
+    }
 }
 
 // ---------- Committed Policy Endpoints ----------
